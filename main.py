@@ -3,24 +3,20 @@ from tkinter import messagebox
 import serial
 import time
 
-# --- 1. ルールブックの定義 (ここを編集して拡張) ---
-PIN_MAP = {
-    'A-Pin1': 2, 'A-Pin2': 3, 'A-Pin3': 6,
-    'B-Pin1': 4, 'B-Pin2': 5, 'B-Pin3': 7,
-    'C-Pin1': 8, 'C-Pin2': 9, 'C-Pin3': 11,
+# --- ルールブックの定義 ---
+ELECTRODE_MAP = {
+    'Cell A-WE': 2, 'Cell A-CE': 3, 'Cell A-RE': 4 ,
+    'Cell B-WE': 5, 'Cell B-CE': 6, 'Cell B-RE': 7,
 }
-MAIN_GROUPS = {
-    'Group A': ['A-Pin1', 'A-Pin2', 'A-Pin3'],
-    'Group B': ['B-Pin1', 'B-Pin2', 'B-Pin3'],
-    'Group C': ['C-Pin1', 'C-Pin2', 'C-Pin3'],
+MAIN_CELLS = {
+    'Cell A': ['Cell A-WE', 'Cell A-CE', 'Cell A-RE'],
+    'Cell B': ['Cell B-WE', 'Cell B-CE', 'Cell B-RE'],
 }
 EXCLUSIVE_CHANNELS = {
-    'Channel 1': ['A-Pin1', 'B-Pin1', 'C-Pin1'],
-    'Channel 2': ['A-Pin2', 'B-Pin2', 'C-Pin2'],
-    'Channel 3': ['A-Pin3', 'B-Pin3', 'C-Pin3'],
+    'WE Channel': ['Cell A-WE', 'Cell B-WE'],
+    'CE Channel': ['Cell A-CE', 'Cell B-CE'],
+    'RE Channel': ['Cell A-RE', 'Cell B-RE'],
 }
-
-# --- これ以降のプログラム本体は変更不要 ---
 
 # --- グローバル変数 ---
 ser = None
@@ -33,59 +29,66 @@ def connect_to_arduino(port="COM5", baudrate=9600):
     try:
         ser = serial.Serial(port, baudrate, timeout=1)
         time.sleep(2)
-        status_label.config(text=f"Connected to {port}. Initializing...")
-        turn_all_pins_off()
+        status_label.config(text=f"Connected to {port}. Initializing electrodes...")
+        disconnect_all_electrodes()
         status_label.config(text=f"Connected and Ready.")
     except serial.SerialException as e:
         messagebox.showerror("Connection Error", f"Failed to open port {port}:\n{e}")
 
-def turn_all_pins_off():
+def disconnect_all_electrodes():
     if not (ser and ser.is_open): return
-    for pin_number in PIN_MAP.values():
+    for pin_number in ELECTRODE_MAP.values():
         ser.write(f"{pin_number},0\n".encode())
         time.sleep(0.05)
     for var in check_vars.values(): var.set(0)
     for var in master_check_vars.values(): var.set(0)
-    print("All pins turned OFF.")
-    status_label.config(text="All pins turned OFF.")
+    print("All electrodes disconnected.")
+    status_label.config(text="All electrodes disconnected.")
 
-def on_master_checkbox_click(group_name):
+def on_master_checkbox_click(cell_name):
     if not (ser and ser.is_open): return
-    state = master_check_vars[group_name].get()
-    pins_in_group = MAIN_GROUPS[group_name]
+    state = master_check_vars[cell_name].get()
+    electrodes_in_cell = MAIN_CELLS[cell_name]
     if state == 1:
-        for channel_name, pins_in_channel in EXCLUSIVE_CHANNELS.items():
-            for alias in pins_in_channel:
-                if alias in pins_in_group:
+        for channel_name, electrodes_in_channel in EXCLUSIVE_CHANNELS.items():
+            for alias in electrodes_in_channel:
+                if alias in electrodes_in_cell:
                     if check_vars[alias].get() == 0:
                         check_vars[alias].set(1)
-                        on_check_click(alias)
+                        on_check_click(alias, update_master=False)
                     break
     else:
-        for alias in pins_in_group:
+        for alias in electrodes_in_cell:
             if check_vars[alias].get() == 1:
                 check_vars[alias].set(0)
-                on_check_click(alias)
+                on_check_click(alias, update_master=False)
+    
+    action_text = "Connected" if state == 1 else "Disconnected"
+    status_label.config(text=f"All electrodes in {cell_name} {action_text}.")
+    update_all_master_checkboxes()
 
-def on_check_click(clicked_alias):
+def on_check_click(clicked_alias, update_master=True):
     if not (ser and ser.is_open): return
     new_state = check_vars[clicked_alias].get()
     if new_state == 0:
-        pin_number = PIN_MAP[clicked_alias]
+        pin_number = ELECTRODE_MAP[clicked_alias]
         ser.write(f"{pin_number},0\n".encode())
-        status_label.config(text=f"Set {clicked_alias} to OFF")
+        if update_master:
+            status_label.config(text=f"Disconnected {clicked_alias}")
     else:
         channel_name = find_channel_for_alias(clicked_alias)
         if channel_name:
             for alias_in_channel in EXCLUSIVE_CHANNELS[channel_name]:
                 if alias_in_channel != clicked_alias and check_vars[alias_in_channel].get() == 1:
                     check_vars[alias_in_channel].set(0)
-                    ser.write(f"{PIN_MAP[alias_in_channel]},0\n".encode())
+                    ser.write(f"{ELECTRODE_MAP[alias_in_channel]},0\n".encode())
                     time.sleep(0.05)
-        pin_to_turn_on = PIN_MAP[clicked_alias]
-        ser.write(f"{pin_to_turn_on},1\n".encode())
-        status_label.config(text=f"Set {clicked_alias} to ON")
-    update_all_master_checkboxes()
+        pin_to_connect = ELECTRODE_MAP[clicked_alias]
+        ser.write(f"{pin_to_connect},1\n".encode())
+        if update_master:
+            status_label.config(text=f"Connected {clicked_alias}")
+    if update_master:
+        update_all_master_checkboxes()
 
 def find_channel_for_alias(target_alias):
     for ch_name, aliases in EXCLUSIVE_CHANNELS.items():
@@ -94,43 +97,43 @@ def find_channel_for_alias(target_alias):
     return None
 
 def update_all_master_checkboxes():
-    for group_name, pins_in_group in MAIN_GROUPS.items():
-        are_all_pins_on = all(check_vars[alias].get() == 1 for alias in pins_in_group)
-        master_check_vars[group_name].set(1 if are_all_pins_on else 0)
+    for cell_name, electrodes_in_cell in MAIN_CELLS.items():
+        are_all_electrodes_connected = all(check_vars[alias].get() == 1 for alias in electrodes_in_cell)
+        master_check_vars[cell_name].set(1 if are_all_electrodes_connected else 0)
 
 def on_closing():
     if ser and ser.is_open:
-        turn_all_pins_off()
+        disconnect_all_electrodes()
         ser.close()
     window.destroy()
 
 # --- GUIの組み立て ---
 window = tk.Tk()
-window.title("Scalable Hybrid Controller")
+window.title("Electrode Controller")
 
-for group_name, pins_in_group in MAIN_GROUPS.items():
-    main_frame = tk.LabelFrame(window, text=group_name, padx=10, pady=5, font=("Helvetica", 11, "bold"))
-    main_frame.pack(padx=10, pady=5, fill=tk.X)
+groups_container_frame = tk.Frame(window)
+groups_container_frame.pack(pady=10)
+
+for cell_name, electrodes_in_cell in MAIN_CELLS.items():
+    main_frame = tk.LabelFrame(groups_container_frame, text=cell_name, padx=10, pady=5, font=("Helvetica", 11, "bold"))
+    main_frame.pack(side=tk.LEFT, padx=10, pady=5, fill=tk.Y, anchor=tk.N)
+    
     var_master = tk.IntVar()
-    chk_master = tk.Checkbutton(main_frame, text="All ON / OFF", variable=var_master,
-                                command=lambda g=group_name: on_master_checkbox_click(g))
+    chk_master = tk.Checkbutton(main_frame, text="Connect / Disconnect All", variable=var_master,
+                                command=lambda g=cell_name: on_master_checkbox_click(g))
     chk_master.pack(anchor=tk.W)
-    master_check_vars[group_name] = var_master
-    for channel_name, pins_in_channel in EXCLUSIVE_CHANNELS.items():
-        channel_has_pins_from_group = any(p in pins_in_group for p in pins_in_channel)
-        if channel_has_pins_from_group:
-            channel_frame = tk.LabelFrame(main_frame, text=channel_name, padx=10, pady=5)
-            channel_frame.pack(padx=5, pady=2, fill=tk.X)
-            for alias in pins_in_channel:
-                if alias in pins_in_group:
-                    var = tk.IntVar(value=0)
-                    checkbox = tk.Checkbutton(channel_frame, text=alias, variable=var,
-                                              command=lambda a=alias: on_check_click(a))
-                    checkbox.pack(anchor=tk.W)
-                    check_vars[alias] = var
+    master_check_vars[cell_name] = var_master
 
-off_button = tk.Button(window, text="Turn All OFF", command=turn_all_pins_off)
-off_button.pack(pady=10)
+    for alias in electrodes_in_cell:
+        electrode_type = alias.split('-')[1]
+        var = tk.IntVar(value=0)
+        checkbox = tk.Checkbutton(main_frame, text=electrode_type, variable=var,
+                                    command=lambda a=alias: on_check_click(a))
+        checkbox.pack(anchor=tk.W, padx=10)
+        check_vars[alias] = var
+
+disconnect_button = tk.Button(window, text="Disconnect All Electrodes", command=disconnect_all_electrodes)
+disconnect_button.pack(pady=10)
 status_label = tk.Label(window, text="Connecting...", bd=1, relief=tk.SUNKEN, anchor=tk.W)
 status_label.pack(side=tk.BOTTOM, fill=tk.X)
 
