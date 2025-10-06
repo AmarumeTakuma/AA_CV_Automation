@@ -7,13 +7,16 @@ import serial, time
 # 0番と1番ピンは通信用に使われるので使用不可
 # 'エイリアス': 実際のピン番号
 PIN_MAP = {
-    'sw1': 10,
-    'sw2': 4,
-    'sw3': 2,
+    'WE1' : 2,
+    'CE1' : 3,
+    'RE1' : 4,
+    'WE2' : 5,
+    'CE2' : 6,
+    'RE2' : 7
 }
 
-ser = None
-checkbox_vars = {}
+ser = None # シリアル接続オブジェクトを保持する変数
+checkbox_vars = {} # 各チェックボックスの状態を保持するTkinter変数の辞書
 
 # Arduinoへの接続を試み、成功したらピンを初期化する
 # 環境に合わせてCOMポートとボーレートを変更
@@ -73,10 +76,10 @@ def on_closing():
 
 # GUIの組み立て
 window = tk.Tk()
-window.title("Arduino GUI Controller")
-window.geometry("300x200")
+window.title("CV GUI Controller")
+window.geometry("300x300")
 
-title_label = tk.Label(window, text="Check/Uncheck to control pins", font=("Helvetica", 12))
+title_label = tk.Label(window, text="Check/Uncheck to control cells or electrodes", font=("Helvetica", 12))
 title_label.pack(pady=10)
 
 # PIN_MAPに基づいてチェックボックスを動的に作成
