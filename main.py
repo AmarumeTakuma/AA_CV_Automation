@@ -3,31 +3,34 @@ from tkinter import messagebox
 import serial
 import time
 
+# Arduinoが接続されているCOMポートとボーレート
+SERIAL_PORT = "COM5"
+BAUDRATE = 9600
+
 # --- ルールブックの定義 ---
 
 # 各電極とArduinoのピン番号の対応
-# 接続を変更した場合はここを変更
-# 0番と1番ピンは通信用に使われるので使用不可
+# 0番ピンと1番ピンは通信に使われるので使用不可
 ELECTRODE_MAP = {
-    'Cell A-WE': 2, 'Cell A-CE': 3, 'Cell A-RE': 4,
-    'Cell B-WE': 5, 'Cell B-CE': 6, 'Cell B-RE': 7,
+    'Cell A-WE': 2, 'Cell A-CE': 4, 'Cell A-RE': 7,
+    'Cell B-WE': 9, 'Cell B-CE': 10, 'Cell B-RE': 12,
 }
 # 各電極がどのセルに属するかの定義
-MAIN_CELLS = {
+CELLS_AND_ELECTRODES = {
     'Cell A': ['Cell A-WE', 'Cell A-CE', 'Cell A-RE'],
     'Cell B': ['Cell B-WE', 'Cell B-CE', 'Cell B-RE'],
 }
-# 同電極のピンが同時に接続されないように設定する排他チャンネル
+# 同種の電極のピンが同時に接続されないように設定する排他チャンネル
 EXCLUSIVE_CHANNELS = {
     'WE Channel': ['Cell A-WE', 'Cell B-WE'],
     'CE Channel': ['Cell A-CE', 'Cell B-CE'],
     'RE Channel': ['Cell A-RE', 'Cell B-RE'],
 }
-# 検索を高速化するための逆引き辞書を自動生成
-REVERSE_CHANNEL_MAP = {}
+# 逆引き辞書を自動生成
+REVERSE_EXCLUSIVE_CHANNELS = {}
 for ch_name, elec_names in EXCLUSIVE_CHANNELS.items():
     for elec_name in elec_names:
-        REVERSE_CHANNEL_MAP[elec_name] = ch_name
+        REVERSE_EXCLUSIVE_CHANNELS[elec_name] = ch_name
 
 # --- グローバル変数 ---
 
@@ -42,49 +45,47 @@ all_widgets = [] # GUIの全ウィジェットを管理する
 def validate_configuration():
     all_elec_names = set(ELECTRODE_MAP.keys())
     # MAIN_CELLSの整合性チェック
-    for cells_name, elec_names_in_cell in MAIN_CELLS.items():
+    for cells_name, elec_names_in_cell in CELLS_AND_ELECTRODES.items():
         for elec_name in elec_names_in_cell:
             if elec_name not in all_elec_names:
-                return f"Configuration Error:\nAlias '{elec_name}' in '{cells_name}' not found in ELECTRODE_MAP."
+                return f"Config Error: Electrode '{elec_name}' in '{cells_name}' not found in ELECTRODE_MAP."
     # EXCLUSIVE_CHANNELSの整合性チェック
     for channel_name, elec_names_in_channel in EXCLUSIVE_CHANNELS.items():
         for elec_name in elec_names_in_channel:
             if elec_name not in all_elec_names:
-                return f"Configuration Error:\nAlias '{elec_name}' in '{channel_name}' not found in ELECTRODE_MAP."
+                return f"Config Error: Electrode '{elec_name}' in '{channel_name}' not found in ELECTRODE_MAP."
     return None
 
+# Arduinoにコマンドを送信する。f"ピン番号,0(LOW)/1(HIGH)\n"の形式
 def send_command(command_to_send):
     if not (ser and ser.is_open):
         status_label.config(text="Error: Not connected.")
         return
+    
     try:
         ser.write(command_to_send.encode())
         print(f"Sent: {command_to_send.strip()}")
     except serial.SerialException as e:
-        print("\n--- COMMUNICATION ERROR ---")
-        print(f"Error while sending command: {command_to_send.strip()}")
-        print(f"Details: {e}")
-        print("---------------------------\n")
+        print(f"\n--- COMMUNICATION ERROR ---\nDetails: {e}\n--------------------\n")
         messagebox.showerror("Communication Error", f"Failed to send command.\nConnection may be lost.\n\nError: {e}")
         status_label.config(text="Disconnected. Please restart the application.")
         disable_all_widgets()
 
-def connect_to_arduino(port="COM5", baudrate=9600):
+# Arduinoとの通信を試みる
+def connect_to_arduino():
     global ser
     try:
-        ser = serial.Serial(port, baudrate, timeout=1)
+        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
         time.sleep(2)
-        status_label.config(text=f"Connected to {port}. Initializing electrodes...")
+        status_label.config(text=f"Connected to {SERIAL_PORT}. Initializing electrodes...")
         disconnect_all_electrodes()
         status_label.config(text=f"Connected and Ready.")
     except serial.SerialException as e:
-        print("\n--- CONNECTION ERROR ---")
-        print(f"Could not open port {port}.")
-        print(f"Details: {e}")
-        print("------------------------\n")
-        messagebox.showerror("Connection Error", f"Could not open port {port}.\n\nPlease check the connection and ensure no other program is using the port.\n\nError: {e}")
-        on_closing()
+        print(f"\n--- CONNECTION ERROR ---\nDetails: {e}\n------------------------\n")
+        messagebox.showerror("Connection Error", f"Could not open port {SERIAL_PORT}.\n\nPlease check connection.\n\nError: {e}")
+        window.destroy()
 
+# 全電極を切断する
 def disconnect_all_electrodes():
     if not (ser and ser.is_open): return
 
@@ -102,12 +103,18 @@ def on_master_checkbox_click(cell_name):
     if not (ser and ser.is_open): return
 
     state = master_check_vars[cell_name].get()
-    electrodes_in_cell = MAIN_CELLS[cell_name]
-    if state == 1:
+    electrodes_in_cell = CELLS_AND_ELECTRODES[cell_name]
+    if state == 0:
+        #このセルをすべて切断する
+        for elec_name in electrodes_in_cell:
+            if check_vars[elec_name].get() == 1:
+                check_vars[elec_name].set(0)
+                on_check_click(elec_name, display_log=False)
+    else:
         # 他のセルをすべて切断する
-        for other_cell_name in MAIN_CELLS:
+        for other_cell_name in CELLS_AND_ELECTRODES:
             if other_cell_name != cell_name:
-                for elec_name in MAIN_CELLS[other_cell_name]:
+                for elec_name in CELLS_AND_ELECTRODES[other_cell_name]:
                     if check_vars[elec_name].get() == 1:
                         check_vars[elec_name].set(0)
                         on_check_click(elec_name, display_log=False)
@@ -115,12 +122,6 @@ def on_master_checkbox_click(cell_name):
         for elec_name in electrodes_in_cell:
             if check_vars[elec_name].get() == 0:
                 check_vars[elec_name].set(1)
-                on_check_click(elec_name, display_log=False)
-    else:
-        #このセルをすべて切断する
-        for elec_name in electrodes_in_cell:
-            if check_vars[elec_name].get() == 1:
-                check_vars[elec_name].set(0)
                 on_check_click(elec_name, display_log=False)
     
     # ログを表示
@@ -137,33 +138,50 @@ def on_check_click(clicked_elec_name, display_log=True):
         # この電極を切断する
         pin_number = ELECTRODE_MAP[clicked_elec_name]
         send_command(f"{pin_number},0\n")
-        if display_log:
-            status_label.config(text=f"Disconnected {clicked_elec_name}")
     else:
-        channel_name = REVERSE_CHANNEL_MAP.get(clicked_elec_name)
-        if channel_name:
-            for elec_name_in_channel in EXCLUSIVE_CHANNELS[channel_name]:
-                if elec_name_in_channel != clicked_elec_name and check_vars[elec_name_in_channel].get() == 1:
-                    check_vars[elec_name_in_channel].set(0)
-                    send_command(f"{ELECTRODE_MAP[elec_name_in_channel]},0\n")
-                    time.sleep(0.05)
-        pin_to_connect = ELECTRODE_MAP[clicked_elec_name]
+        # 他セルの同種の電極を切断する
+        pin_to_connect = ELECTRODE_MAP.get(clicked_elec_name)
+        channel_name = REVERSE_EXCLUSIVE_CHANNELS.get(clicked_elec_name)
+        # 接続したい電極が見つけられなかった場合
+        if not pin_to_connect:
+            error_msg = (f"Config Error:\nElectrode '{clicked_elec_name}' is not defined in ELECTRODE_MAP.\nPlease check the spelling.")
+            print(error_msg)
+            messagebox.showerror("Configuration Error", error_msg)
+            check_vars[clicked_elec_name].set(0)
+            return
+        # 接続したい電極が排他チャンネルに入っていなかった場合
+        if not channel_name:
+            error_msg = (f"Config Error:\nElectrode '{clicked_elec_name}' is not assigned to any EXCLUSIVE_CHANNELS.\nPlease add it to the correct channel.")
+            print(error_msg)
+            messagebox.showerror("Configuration Error", error_msg)
+            check_vars[clicked_elec_name].set(0)
+            return
+        for elec_name_in_channel in EXCLUSIVE_CHANNELS[channel_name]:
+            if elec_name_in_channel != clicked_elec_name and check_vars[elec_name_in_channel].get() == 1:
+                check_vars[elec_name_in_channel].set(0)
+                send_command(f"{ELECTRODE_MAP[elec_name_in_channel]},0\n")
+                time.sleep(0.05)
+        # この電極を接続する
         send_command(f"{pin_to_connect},1\n")
-        if display_log:
-            status_label.config(text=f"Connected {clicked_elec_name}")
 
+    # ログを表示
     if display_log:
+        action_text = "Connected" if new_state == 1 else "Disconnected"
+        status_label.config(text=f"{action_text} {clicked_elec_name}.")
         update_all_master_checkboxes()
 
+# 親チェックボックスの状態を矛盾がないように更新する
 def update_all_master_checkboxes():
-    for cell_name, electrodes_in_cell in MAIN_CELLS.items():
-        are_all_electrodes_connected = all(check_vars[alias].get() == 1 for alias in electrodes_in_cell)
+    for cell_name, electrodes_in_cell in CELLS_AND_ELECTRODES.items():
+        are_all_electrodes_connected = all(check_vars[elec_name].get() == 1 for elec_name in electrodes_in_cell)
         master_check_vars[cell_name].set(1 if are_all_electrodes_connected else 0)
 
+# プログラム進行中、エラーの際にGUI上の全ウィジェットを無効化する
 def disable_all_widgets():
     for widget in all_widgets:
         widget.config(state=tk.DISABLED)
 
+# 正常にプログラムを終了する
 def on_closing():
     if ser and ser.is_open:
         disconnect_all_electrodes()
@@ -180,9 +198,7 @@ if __name__ == '__main__':
     # 辞書の整合性チェック
     config_error = validate_configuration()
     if config_error:
-        print("\n--- CONFIGURATION ERROR ---")
-        print(config_error)
-        print("---------------------------\n")
+        print(f"\n--- CONFIGURATION ERROR ---\n{config_error}\n---------------------------\n")
         messagebox.showerror("Configuration Error", config_error)
         window.destroy()
 
@@ -191,7 +207,7 @@ if __name__ == '__main__':
         groups_container_frame = tk.Frame(window)
         groups_container_frame.pack(pady=10)
 
-        for cell_name, electrodes_in_cell in MAIN_CELLS.items():
+        for cell_name, electrodes_in_cell in CELLS_AND_ELECTRODES.items():
             # セルごとのフレーム
             main_frame = tk.LabelFrame(groups_container_frame, text=cell_name, padx=10, pady=5, font=("Helvetica", 11, "bold"))
             main_frame.pack(side=tk.LEFT, padx=10, pady=5, fill=tk.Y, anchor=tk.N)
@@ -225,4 +241,5 @@ if __name__ == '__main__':
         
         window.protocol("WM_DELETE_WINDOW", on_closing)
         window.after(100, connect_to_arduino)
+        
         window.mainloop()
