@@ -13,10 +13,11 @@ BAUDRATE = 9600
 # 0番ピンと1番ピンは通信に使われるので使用不可、サーボモータはPWM対応のピンへ
 ELECTRODE_MAP = {
     'Cell A-WE': 2, 'Cell A-CE': 4, 'Cell A-RE': 7,
-    'Cell B-WE': 9, 'Cell B-CE': 10, 'Cell B-RE': 12,
+    'Cell B-WE': 8, 'Cell B-CE': 10, 'Cell B-RE': 12,
 }
+# 'half_angle': 45などと追加すれば拡張機能として利用できる。ただしキーの名前に"angle"を含ませること
 SERVO_MAP = {
-    'Gas Line A': {'pin': 3,  'on_angle': 90, 'off_angle': 0}, # , 'half_angle': 45
+    'Gas Line A': {'pin': 3,  'on_angle': 90, 'off_angle': 0},
     'Gas Line B': {'pin': 5,  'on_angle': 90, 'off_angle': 0},
     'Gas Purge':  {'pin': 6, 'on_angle': 90, 'off_angle': 0},
 }
@@ -33,7 +34,7 @@ ELEC_EXCLUSIVE_CHANNELS = {
     'RE Channel': ['Cell A-RE', 'Cell B-RE'],
 }
 # ガスラインの排他チャンネル
-GAS_EXCLUSIVE_CHANNEL = {
+GAS_EXCLUSIVE_CHANNELS = {
     'Gas Channel': ['Gas Line A', 'Gas Line B']
 }
 
@@ -42,10 +43,11 @@ REVERSE_ELEC_EXCLUSIVE_CHANNELS = {}
 for elec_channel_name, elec_names in ELEC_EXCLUSIVE_CHANNELS.items():
     for elec_name in elec_names:
         REVERSE_ELEC_EXCLUSIVE_CHANNELS[elec_name] = elec_channel_name
-REVERSE_GAS_EXCLUSIVE_CHANNEL = {}
-for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNEL.items():
+
+REVERSE_GAS_EXCLUSIVE_CHANNELS = {}
+for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
     for gasline_name in gasline_names:
-        REVERSE_GAS_EXCLUSIVE_CHANNEL[gasline_name] = gas_channel_name
+        REVERSE_GAS_EXCLUSIVE_CHANNELS[gasline_name] = gas_channel_name
 
 # --- グローバル変数 ---
 
@@ -57,7 +59,7 @@ all_widgets = []
 
 # --- 関数定義 ---
 
-# ルールブックの整合性をチェックする
+""" ルールブックの整合性をチェックする """
 def validate_configuration():
     all_elec_names = set(ELECTRODE_MAP.keys())
     # セルと属する電極の整合性チェック
@@ -75,21 +77,20 @@ def validate_configuration():
     # サーボモータについて値の設定と角度の妥当性をチェック
     for gasline_name, settings in SERVO_MAP.items():
         if 'pin' not in settings or 'on_angle' not in settings or 'off_angle' not in settings:
-            return f"Config Error: Gas line '{gasline_name}' in GAS_SERVO_MAP is missing 'pin', 'on_angle', or 'off_angle'."
-        on_angle = settings['on_angle']
-        off_angle = settings['off_angle']
-        if not (isinstance(on_angle, int) and 0 <= on_angle <= 180):
-            return f"Config Error: 'on_angle' for '{gasline_name}' must be between 0 and 180."
-        if not (isinstance(off_angle, int) and 0 <= off_angle <= 180):
-            return f"Config Error: 'off_angle' for '{gasline_name}' must be between 0 and 180."
+            return f"Config Error: Gas line '{gasline_name}' in GAS_SERVO_MAP is missing essential settings."
+        # 'angle'が含まれるすべての角度をチェック
+        for key, value in settings.items():
+            if 'angle' in key:
+                if not (isinstance(value, int) and 0 <= value <= 180):
+                    return f"Config Error: '{key}' for '{gasline_name}' must be an integer between 0 and 180."
     # ガスライン排他チャンネルの整合性チェック
-    for gas_channel_name, gasline_name_in_channel in GAS_EXCLUSIVE_CHANNEL.items():
+    for gas_channel_name, gasline_name_in_channel in GAS_EXCLUSIVE_CHANNELS.items():
         for gasline_name in gasline_name_in_channel:
             if gasline_name not in all_gasline_names:
                 return f"Config Error: Gas line '{gasline_name}' in '{gas_channel_name}' not found in SERVO_MAP."
     return None
 
-# Arduinoにコマンドを送信する
+""" Arduinoにコマンドを送信する """
 def send_command(command_to_send):
     if not (ser and ser.is_open):
         status_label.config(text="Error: Not connected.")
@@ -106,7 +107,7 @@ def send_command(command_to_send):
         disable_all_widgets()
         return False
 
-# Arduinoとの通信を試みる
+""" Arduinoとの通信を試みる """
 def connect_to_arduino():
     global ser
     try:
@@ -121,7 +122,7 @@ def connect_to_arduino():
         messagebox.showerror("Connection Error", f"Could not open port {SERIAL_PORT}.\n\nPlease check connection.\n\nError: {e}")
         window.destroy()
 
-# 管理下の全デバイス、電極、サーボモータを初期状態(OFF)にする
+""" 管理下の全デバイス、電極、サーボモータを初期状態(OFF)にする """
 def initialize_all_devices():
     if not (ser and ser.is_open): return False
 
@@ -146,7 +147,7 @@ def initialize_all_devices():
         status_label.config(text="Device initialization finished.")
     return success
 
-# 一括操作チェックボックスがクリックされたときの処理
+""" 一括操作チェックボックスがクリックされたときの処理 """
 def on_master_checkbox_click(cell_name):
     if not (ser and ser.is_open): return
 
@@ -157,7 +158,7 @@ def on_master_checkbox_click(cell_name):
         for elec_name in electrodes_in_cell:
             if elec_check_vars[elec_name].get() == 1:
                 elec_check_vars[elec_name].set(0)
-                on_check_click(elec_name, display_log=False)
+                on_check_click(elec_name, update_gui=False)
     else:
         # 他のセルをすべて切断する
         for other_cell_name in CELLS_AND_ELECTRODES:
@@ -165,20 +166,20 @@ def on_master_checkbox_click(cell_name):
                 for elec_name in CELLS_AND_ELECTRODES[other_cell_name]:
                     if elec_check_vars[elec_name].get() == 1:
                         elec_check_vars[elec_name].set(0)
-                        on_check_click(elec_name, display_log=False)
+                        on_check_click(elec_name, update_gui=False)
         # このセルをすべて接続する
         for elec_name in electrodes_in_cell:
             if elec_check_vars[elec_name].get() == 0:
                 elec_check_vars[elec_name].set(1)
-                on_check_click(elec_name, display_log=False)
+                on_check_click(elec_name, update_gui=False)
     
     # ログを表示
     action_text = "Connected" if state == 1 else "Disconnected"
     status_label.config(text=f"All electrodes in {cell_name} {action_text}.")
     update_all_master_checkboxes()
 
-# 電極チェックボックスがクリックされたときの処理
-def on_check_click(clicked_elec_name, display_log=True):
+""" 電極チェックボックスがクリックされたときの処理 """
+def on_check_click(clicked_elec_name, update_gui=True):
     if not (ser and ser.is_open): return
 
     new_state = elec_check_vars[clicked_elec_name].get()
@@ -207,7 +208,7 @@ def on_check_click(clicked_elec_name, display_log=True):
             return
         # 他セルの同種の電極を切断する
         for elec_name_in_channel in ELEC_EXCLUSIVE_CHANNELS[channel_name]:
-            if elec_name_in_channel != clicked_elec_name and elec_check_vars[elec_name_in_channel].get() == 1:
+            if elec_name_in_channel != clicked_elec_name and elec_name_in_channel in elec_check_vars and elec_check_vars[elec_name_in_channel].get() == 1:
                 elec_check_vars[elec_name_in_channel].set(0)
                 pin_to_disconnect = ELECTRODE_MAP[elec_name_in_channel]
                 send_command(f"EL,{pin_to_disconnect},0\n")
@@ -216,19 +217,19 @@ def on_check_click(clicked_elec_name, display_log=True):
         send_command(f"EL,{pin_number},1\n")
 
     # ログを表示
-    if display_log:
+    if update_gui:
         action_text = "Connected" if new_state == 1 else "Disconnected"
         status_label.config(text=f"{action_text} {clicked_elec_name}.")
         update_all_master_checkboxes()
 
-# 親チェックボックスの状態を矛盾がないように更新する
+""" 親チェックボックスの状態を矛盾がないように更新する """
 def update_all_master_checkboxes():
     for cell_name, electrodes_in_cell in CELLS_AND_ELECTRODES.items():
         are_all_electrodes_connected = all(elec_check_vars[elec_name].get() == 1 for elec_name in electrodes_in_cell)
         master_elec_check_vars[cell_name].set(1 if are_all_electrodes_connected else 0)
 
-# ガスチェックボックスがクリックされたときの処理
-def on_gas_check_click(clicked_gasline_name, display_log=True):
+""" ガスチェックボックスがクリックされたときの処理 """
+def on_gas_check_click(clicked_gasline_name, update_gui=True):
     if not (ser and ser.is_open): return
 
     new_state = gas_check_vars[clicked_gasline_name].get()
@@ -247,11 +248,11 @@ def on_gas_check_click(clicked_gasline_name, display_log=True):
         # このガスラインを閉じる
         send_command(f"SV,{servo_info['pin']},{servo_info['off_angle']}\n")
     else:
-        channel_name = REVERSE_GAS_EXCLUSIVE_CHANNEL.get(clicked_gasline_name)
+        channel_name = REVERSE_GAS_EXCLUSIVE_CHANNELS.get(clicked_gasline_name)
         # パージ以外のガスラインで真
         if channel_name:
             # 他ガスラインを閉じる
-            for gasline_name_in_channel in GAS_EXCLUSIVE_CHANNEL[channel_name]:
+            for gasline_name_in_channel in GAS_EXCLUSIVE_CHANNELS[channel_name]:
                 if gasline_name_in_channel != clicked_gasline_name and gasline_name_in_channel in gas_check_vars and gas_check_vars[gasline_name_in_channel].get() == 1:
                     gas_check_vars[gasline_name_in_channel].set(0)
                     servo_info_to_close = SERVO_MAP[gasline_name_in_channel]
@@ -261,16 +262,16 @@ def on_gas_check_click(clicked_gasline_name, display_log=True):
         send_command(f"SV,{servo_info['pin']},{servo_info['on_angle']}\n")
 
     # ログを表示
-    if display_log:
+    if update_gui:
         action_text = "Opened" if new_state == 1 else "Closed"
         status_label.config(text=f"Gas line {clicked_gasline_name} {action_text}.")
 
-# プログラム進行中、エラーの際にGUI上の全ウィジェットを無効化する
+""" プログラム進行中、エラーの際にGUI上の全ウィジェットを無効化する """
 def disable_all_widgets():
     for widget in all_widgets:
         widget.config(state=tk.DISABLED)
 
-# 正常にプログラムを終了する
+""" 正常にプログラムを終了する """
 def on_closing():
     if ser and ser.is_open:
         initialize_all_devices()
