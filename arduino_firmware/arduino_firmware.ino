@@ -1,13 +1,20 @@
 #include <Servo.h>
 
 // 定数定義 (Pythonと合わせる)
+// ボーレート
 const int BAUDRATE = 9600;
 // ピン番号
+const int PINS_ELECTRODE[] = {2, 4, 7, 8, 10, 12}; // Python: in ELECTRODE_MAP
 const int PIN_SERVO_A = 3;  // Python: 'Gas Line A'
 const int PIN_SERVO_B = 5;  // Python: 'Gas Line B'
 const int PIN_SERVO_PURGE = 6;  // Python: 'Gas Purge'
+const int PIN_START = 11; // Python: START_PIN
+const int PIN_E_STOP = 13; // Python: E_STOP_PIN
 // サーボの初期位置
 const int SERVO_OFF_ANGLE = 0;
+
+// 電極数の計算
+int electrodeCount = sizeof(PINS_ELECTRODE) / sizeof(PINS_ELECTRODE[0]);
 
 // Servoオブジェクト
 Servo servoA;  // Gas Line A用
@@ -16,6 +23,12 @@ Servo servoPurge; // Gas Purge用
 
 void setup() {
   Serial.begin(BAUDRATE);
+
+  // 電極の初期化
+  for (int i = 0; i < electrodeCount; i++) {
+    pinMode(PINS_ELECTRODE[i], OUTPUT);
+    digitalWrite(PINS_ELECTRODE[i], LOW);
+  }
   
   // サーボの初期化
   servoA.attach(PIN_SERVO_A);
@@ -27,7 +40,14 @@ void setup() {
   servoB.write(SERVO_OFF_ANGLE);
   servoPurge.write(SERVO_OFF_ANGLE);
   
-  Serial.println("Arduino Ready");
+  // 測定開始/エマストピン: Active Lowなので、初期値はHIGH(OFF)にしておく
+  pinMode(PIN_START, OUTPUT);
+  digitalWrite(PIN_START, HIGH); // 待機状態
+  
+  pinMode(PIN_E_STOP, OUTPUT);
+  digitalWrite(PIN_E_STOP, HIGH); // 待機状態
+
+  Serial.println("Arduino Ready.");
 }
 
 void loop() {
@@ -41,8 +61,8 @@ void loop() {
 void parseCommand(String cmd) {
   cmd.trim(); // 前後の空白を削除
   
-  if (cmd.startsWith("EL,")) { 
-    // 電極制御コマンド (EL,ピン番号,0/1)
+  if (cmd.startsWith("DO,")) { 
+    // DigitalOutput用コマンド (DO,ピン番号,0/1)
     int firstComma = cmd.indexOf(',');
     int secondComma = cmd.indexOf(',', firstComma + 1);
     
@@ -53,10 +73,10 @@ void parseCommand(String cmd) {
        pinMode(pin, OUTPUT); 
        digitalWrite(pin, value);
        
-       Serial.print("Executed Electrode. Pin: "); Serial.print(pin);
+       Serial.print("Executed DigitalOutput. Pin: "); Serial.print(pin);
        Serial.print(", Val: "); Serial.println(value);
     } else { 
-      Serial.println("Error: EL format (expected EL,pin,val)"); 
+      Serial.println("Error: DO format (expected DO,pin,val)."); 
     }
 
   } else if (cmd.startsWith("SV,")) { 
@@ -76,7 +96,7 @@ void parseCommand(String cmd) {
       else if (pin == PIN_SERVO_B) servoB.write(angle);
       else if (pin == PIN_SERVO_PURGE) servoPurge.write(angle);
       else {
-        Serial.println("Error: Unknown servo pin");
+        Serial.println("Error: Unknown servo pin.");
         return; 
       }
       
@@ -84,11 +104,13 @@ void parseCommand(String cmd) {
       Serial.print(", Angle: "); Serial.println(angle);
       
     } else { 
-      Serial.println("Error: SV format (expected SV,pin,angle)"); 
+      Serial.println("Error: SV format (expected SV,pin,angle)."); 
     }
     
   } else {
     // どちらのヘッダーでもない場合
-    Serial.println("Error: Unknown command prefix");
+    if (cmd.length() > 0) {
+        Serial.println("Error: Unknown command prefix.");
+    }
   }
 }
