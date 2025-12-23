@@ -9,7 +9,7 @@ BAUDRATE = 9600
 
 # --- ルールブックの定義 ---
 
-# 各電極、各サーボモータとArduinoのピン番号の対応
+# 各電極、各サーボモータ、HZ-ProとArduinoのピン番号の対応
 # 0番ピンと1番ピンは通信に使われるので使用不可、サーボモータはPWM対応のピンへ
 ELECTRODE_MAP = {
     'Cell A-WE': 2, 'Cell A-CE': 4, 'Cell A-RE': 7,
@@ -21,6 +21,9 @@ SERVO_MAP = {
     'Gas Line B': {'pin': 5,  'on_angle': 90, 'off_angle': 0},
     'Gas Purge':  {'pin': 6, 'on_angle': 90, 'off_angle': 0},
 }
+# HZ-Pro
+START_PIN = 11 # DI1
+E_STOP_PIN = 13 # CELL-OPEN-IN
 
 # 各電極がどのセルに属するかの定義
 CELLS_AND_ELECTRODES = {
@@ -52,15 +55,20 @@ for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
 # --- グローバル変数 ---
 
 ser = None
+
 elec_check_vars = {}
 master_elec_check_vars = {}
 gas_check_vars = {}
+start_button = None
+estop_var = None
+estop_widget = None
 all_widgets = []
 
 # --- 関数定義 ---
 
 """ ルールブックの整合性をチェックする """
 def validate_configuration():
+    # 辞書の名前の整合性チェック
     all_elec_names = set(ELECTRODE_MAP.keys())
     # セルと属する電極の整合性チェック
     for cells_name, elec_names_in_cell in CELLS_AND_ELECTRODES.items():
@@ -88,6 +96,28 @@ def validate_configuration():
         for gasline_name in gasline_name_in_channel:
             if gasline_name not in all_gasline_names:
                 return f"Config Error: Gas line '{gasline_name}' in '{gas_channel_name}' not found in SERVO_MAP."
+            
+    # ピンの重複チェック
+    pin_usage = {} 
+    # 電極のピンをチェック
+    for name, pin in ELECTRODE_MAP.items():
+        if pin in pin_usage:
+            return f"Config Error: Pin {pin} is duplicated. Used by '{pin_usage[pin]}' and '{name}'."
+        pin_usage[pin] = name
+    # ガスラインのピンをチェック
+    for name, settings in SERVO_MAP.items():
+        pin = settings['pin']
+        if pin in pin_usage:
+            return f"Config Error: Pin {pin} is duplicated. Used by '{pin_usage[pin]}' and '{name}'."
+        pin_usage[pin] = name
+    # HZ-Pro用のピンをチェック
+    if START_PIN in pin_usage:
+        return f"Config Error: Start Pin {START_PIN} is duplicated. Used by '{pin_usage[START_PIN]}'."
+    pin_usage[START_PIN] = "Start Pin"
+    if E_STOP_PIN in pin_usage:
+        return f"Config Error: E-STOP Pin {E_STOP_PIN} is duplicated. Used by '{pin_usage[E_STOP_PIN]}'."
+    pin_usage[E_STOP_PIN] = "E-STOP Pin"
+
     return None
 
 """ Arduinoにコマンドを送信する """
@@ -104,7 +134,7 @@ def send_command(command_to_send):
         print(f"\n--- COMMUNICATION ERROR ---\nDetails: {e}\n--------------------\n")
         messagebox.showerror("Communication Error", f"Failed to send command.\nConnection may be lost.\n\nError: {e}")
         status_label.config(text="Disconnected. Please restart the application.")
-        disable_all_widgets()
+        disable_all_widgets_on_error()
         return False
 
 """ Arduinoとの通信を試みる """
@@ -127,25 +157,48 @@ def initialize_all_devices():
     if not (ser and ser.is_open): return False
 
     success = True
-    # 電極をすべて切断
+    # 電極をすべて切断、UI更新
     for elec_pin in ELECTRODE_MAP.values():
-        if not send_command(f"EL,{elec_pin},0\n"): success = False # 電極用コマンドは EL,pin,0/1
+        if not send_command(f"DO,{elec_pin},0\n"): success = False # DigitalOutput用コマンドは DO,pin,0/1
         time.sleep(0.05)
     for var in elec_check_vars.values(): var.set(0)
     for var in master_elec_check_vars.values(): var.set(0)
-
-    # サーボモータをすべてOFF角度へ
+    # サーボモータをすべてOFF角度へ、UI更新
     for settings in SERVO_MAP.values():
         servo_pin = settings['pin']
         off_angle = settings['off_angle']
         if not send_command(f"SV,{servo_pin},{off_angle}\n"): success = False # サーボ用コマンドは SV,pin,angle
         time.sleep(0.1)
     for var in gas_check_vars.values(): var.set(0)
+    # HZ-ProのDIをすべてHIGHへ（Active Lowにするので待機時はHIGH）、UI更新
+    if not send_command(f"DO,{START_PIN},1\n"): success = False
+    time.sleep(0.05)
+    if not send_command(f"DO,{E_STOP_PIN},1\n"): success = False
+    if estop_var: estop_var.set(0)
+    # UIのロック解除、測定開始/エマストボタン状態リセット
+    toggle_ui_lock(False)
+    if start_button: start_button.config(state=tk.NORMAL, relief=tk.RAISED)
+    if estop_widget:
+        estop_widget.config(fg="black", font=("Arial", 9, "bold"))
 
     print("Device initialization attempt finished.")
     if 'status_label' in globals() and status_label.winfo_exists():
         status_label.config(text="Device initialization finished.")
     return success
+
+""" 測定中UIをロックする処理 """
+def toggle_ui_lock(is_locked): # True：ロック、False：解除
+    # エマストのみ操作可能
+    allowed_widgets = [estop_widget]
+
+    for widget in all_widgets:
+        if widget in allowed_widgets:
+            continue
+            
+        if is_locked:
+            widget.config(state=tk.DISABLED)
+        else:
+            widget.config(state=tk.NORMAL)
 
 """ 一括操作チェックボックスがクリックされたときの処理 """
 def on_master_checkbox_click(cell_name):
@@ -196,7 +249,7 @@ def on_check_click(clicked_elec_name, update_gui=True):
     
     if new_state == 0:
         # この電極を切断する
-        send_command(f"EL,{pin_number},0\n") # 電極用コマンドは EL,pin,0/1
+        send_command(f"DO,{pin_number},0\n")
     else:
         channel_name = REVERSE_ELEC_EXCLUSIVE_CHANNELS.get(clicked_elec_name)
         # 接続したい電極が排他チャンネルに入っていなかった場合
@@ -211,12 +264,12 @@ def on_check_click(clicked_elec_name, update_gui=True):
             if elec_name_in_channel != clicked_elec_name and elec_name_in_channel in elec_check_vars and elec_check_vars[elec_name_in_channel].get() == 1:
                 elec_check_vars[elec_name_in_channel].set(0)
                 pin_to_disconnect = ELECTRODE_MAP[elec_name_in_channel]
-                send_command(f"EL,{pin_to_disconnect},0\n")
+                send_command(f"DO,{pin_to_disconnect},0\n")
                 time.sleep(0.05)
         # この電極を接続する
-        send_command(f"EL,{pin_number},1\n")
+        send_command(f"DO,{pin_number},1\n")
 
-    # ログを表示
+    # 一括操作以外の場合ではログを表示
     if update_gui:
         action_text = "Connected" if new_state == 1 else "Disconnected"
         status_label.config(text=f"{action_text} {clicked_elec_name}.")
@@ -261,15 +314,54 @@ def on_gas_check_click(clicked_gasline_name, update_gui=True):
         # このガスラインを開く
         send_command(f"SV,{servo_info['pin']},{servo_info['on_angle']}\n")
 
-    # ログを表示
+    # ログを表示（現時点では常にTrue）
     if update_gui:
         action_text = "Opened" if new_state == 1 else "Closed"
         status_label.config(text=f"Gas line {clicked_gasline_name} {action_text}.")
 
+""" 測定開始ボタンが押されたときの処理 """
+def start_measurement():
+    if not (ser and ser.is_open): return
+    # Active LowなのでLOWを送ってONにする
+    send_command(f"DO,{START_PIN},0\n")
+    # UI、測定開始ボタンをロック
+    toggle_ui_lock(True)
+    start_button.config(state=tk.DISABLED, relief=tk.SUNKEN)
+    status_label.config(text="Measurement STARTED. Waiting for manual stop (Press E-STOP).")
+
+""" エマストボタンが押されたときの処理 """
+def on_estop_click():
+    if not (ser and ser.is_open): return
+    
+    # ユーザーが押してONにしたときのみ動作
+    if estop_var.get() == 1:
+        # Active Lowでパルス送信
+        send_command(f"DO,{E_STOP_PIN},0\n")
+        estop_widget.config(fg="white", font=("Arial", 9, "bold"))
+        status_label.config(text="Measurement ABORTED via E-STOP. Device Reset.")
+        window.update() # GUIを強制更新して表示を反映
+        time.sleep(0.5)
+        send_command(f"DO,{E_STOP_PIN},1\n")
+        
+        # 測定開始されないように
+        send_command(f"DO,{START_PIN},1\n") 
+        
+        # UI、測定開始ボタン、エマストボタンのロック解除
+        toggle_ui_lock(False)
+        start_button.config(state=tk.NORMAL, relief=tk.RAISED)
+        estop_var.set(0)
+        
+        estop_widget.config(fg="black", font=("Arial", 9, "bold"))
+        status_label.config(text="E-STOP Released. Ready for next measurement.")
+    else:
+        # 万が一OFF操作された場合も安全のためHIGHを送っておく
+        send_command(f"DO,{E_STOP_PIN},1\n")
+
 """ プログラム進行中、エラーの際にGUI上の全ウィジェットを無効化する """
-def disable_all_widgets():
+def disable_all_widgets_on_error():
     for widget in all_widgets:
         widget.config(state=tk.DISABLED)
+    if start_button: start_button.config(state=tk.DISABLED)
 
 """ 正常にプログラムを終了する """
 def on_closing():
@@ -297,7 +389,7 @@ if __name__ == '__main__':
         main_container = tk.Frame(window)
         main_container.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
 
-        # 左側: 電極制御
+        # 左側：電極制御
         elec_frame = tk.LabelFrame(main_container, text="Electrode Control", padx=10, pady=5)
         elec_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y, anchor=tk.N)
 
@@ -325,9 +417,13 @@ if __name__ == '__main__':
                 elec_check_vars[elec_name] = var
                 all_widgets.append(checkbox)
 
-        # 右側: ガス制御
-        gas_frame = tk.LabelFrame(main_container, text="Gas Control (Servo)", padx=10, pady=10)
-        gas_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y, anchor=tk.N)
+        # 右側：ガス制御、HZ-Pro制御
+        right_container = tk.Frame(main_container)
+        right_container.pack(side=tk.LEFT, padx=5, fill=tk.Y, anchor=tk.N)
+
+        # ガス
+        gas_frame = tk.LabelFrame(right_container, text="Gas Control (Servo)", padx=10, pady=10)
+        gas_frame.pack(fill=tk.X, anchor=tk.N, pady=(0, 10))
 
         for gas_name in SERVO_MAP:
             var = tk.IntVar(value=0)
@@ -336,6 +432,24 @@ if __name__ == '__main__':
             gas_check_vars[gas_name] = var
             all_widgets.append(checkbox)
 
+        # HZ-Pro
+        measurement_frame = tk.LabelFrame(right_container, text="HZ-Pro Control (Active Low)", padx=10, pady=10)
+        measurement_frame.pack(fill=tk.X, anchor=tk.N, pady=(0, 10))
+
+        # 測定開始ボタン
+        start_button = tk.Button(measurement_frame, text="Start Measurement", bg="#ccffcc", 
+                                 width=20, height=2, command=start_measurement)
+        start_button.pack(pady=5)
+
+        # E-STOP ボタン
+        estop_var = tk.IntVar(value=0)
+        estop_widget = tk.Checkbutton(measurement_frame, text="E-STOP", bg="#ffcccc", variable=estop_var, 
+                             indicatoron=0, selectcolor="red", 
+                             width=15, height=2, fg="black", font=("Arial", 9, "bold"),
+                             command=on_estop_click)
+        estop_widget.pack(pady=2)
+
+        # 初期化ボタン
         bottom_frame = tk.Frame(window)
         bottom_frame.pack(side=tk.BOTTOM, pady=10, fill=tk.X, padx=10)
 
