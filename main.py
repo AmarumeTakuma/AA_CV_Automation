@@ -55,6 +55,7 @@ for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
 # --- グローバル変数 ---
 
 ser = None
+is_closing = False
 
 elec_check_vars = {}
 master_elec_check_vars = {}
@@ -112,7 +113,7 @@ def validate_configuration():
         pin_usage[pin] = name
     # HZ-Pro用のピンをチェック
     if START_PIN in pin_usage:
-        return f"Config Error: Start Pin {START_PIN} is duplicated. Used by '{pin_usage[START_PIN]}'."
+        return f"Config Error: Trigger Pin {START_PIN} is duplicated. Used by '{pin_usage[START_PIN]}'."
     pin_usage[START_PIN] = "Start Pin"
     if E_STOP_PIN in pin_usage:
         return f"Config Error: E-STOP Pin {E_STOP_PIN} is duplicated. Used by '{pin_usage[E_STOP_PIN]}'."
@@ -120,74 +121,118 @@ def validate_configuration():
 
     return None
 
+""" Arduinoとの通信を試みる """
+def connect_to_arduino():
+    global ser
+    if is_closing: return
+
+    try:
+        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
+        time.sleep(2)
+        if not is_closing:
+            status_label.config(text=f"Connected to {SERIAL_PORT}. Initializing electrodes...")
+        if not initialize_all_devices():
+            raise serial.SerialException("Failed to initialize devices during connection.")
+        if not is_closing:
+            status_label.config(text=f"Connected and Ready.")
+            check_serial_input()
+
+    except serial.SerialException as e:
+        if not is_closing: # 終了中はエラーを出さない
+            print(f"\n--- CONNECTION ERROR ---\nDetails: {e}\n------------------------\n")
+            messagebox.showerror("Connection Error", f"Could not open port {SERIAL_PORT}.\n\nPlease check connection.\n\nError: {e}")
+            window.destroy()
+
 """ Arduinoにコマンドを送信する """
 def send_command(command_to_send):
     if not (ser and ser.is_open):
-        status_label.config(text="Error: Not connected.")
-        return
+        if not is_closing:
+            status_label.config(text="Error: Not connected.")
+        return False
     
     try:
         ser.write(command_to_send.encode())
         print(f"Sent: {command_to_send.strip()}")
         return True
+    
     except serial.SerialException as e:
-        print(f"\n--- COMMUNICATION ERROR ---\nDetails: {e}\n--------------------\n")
-        messagebox.showerror("Communication Error", f"Failed to send command.\nConnection may be lost.\n\nError: {e}")
-        status_label.config(text="Disconnected. Please restart the application.")
-        disable_all_widgets_on_error()
+        if not is_closing: # 終了中はエラーを出さない
+            print(f"\n--- COMMUNICATION ERROR ---\nDetails: {e}\n--------------------\n")
+            messagebox.showerror("Communication Error", f"Failed to send command.\nConnection may be lost.\n\nError: {e}")
+            status_label.config(text="Disconnected. Please restart the application.")
+            disable_all_widgets_on_error()
         return False
 
-""" Arduinoとの通信を試みる """
-def connect_to_arduino():
-    global ser
+""" Arduinoからのシリアル入力を監視・表示する """
+def check_serial_input():
+    if is_closing: return
+    if ser and ser.is_open:
+        try:
+            # 受信データがあるか確認
+            while ser.in_waiting > 0:
+                # データを読み取り、デコードして表示
+                line = ser.readline().decode('utf-8', errors='replace').strip()
+                if line:
+                    print(f"[Arduino] {line}")
+                    
+        except Exception as e:
+            print(f"Serial Read Error: {e}")
+    
+    # 100ms後に再実行
     try:
-        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
-        time.sleep(2)
-        status_label.config(text=f"Connected to {SERIAL_PORT}. Initializing electrodes...")
-        if not initialize_all_devices():
-            raise serial.SerialException("Failed to initialize devices during connection.")
-        status_label.config(text=f"Connected and Ready.")
-    except serial.SerialException as e:
-        print(f"\n--- CONNECTION ERROR ---\nDetails: {e}\n------------------------\n")
-        messagebox.showerror("Connection Error", f"Could not open port {SERIAL_PORT}.\n\nPlease check connection.\n\nError: {e}")
-        window.destroy()
+        if window.winfo_exists() and not is_closing:
+            window.after(100, check_serial_input)
+    except:
+        pass
 
 """ 管理下の全デバイス、電極、サーボモータを初期状態(OFF)にする """
 def initialize_all_devices():
     if not (ser and ser.is_open): return False
 
     success = True
-    # 電極をすべて切断、UI更新
+    # 電極をすべて切断
     for elec_pin in ELECTRODE_MAP.values():
         if not send_command(f"DO,{elec_pin},0\n"): success = False # DigitalOutput用コマンドは DO,pin,0/1
         time.sleep(0.05)
-    for var in elec_check_vars.values(): var.set(0)
-    for var in master_elec_check_vars.values(): var.set(0)
-    # サーボモータをすべてOFF角度へ、UI更新
+    # サーボモータをすべてOFF角度へ
     for settings in SERVO_MAP.values():
         servo_pin = settings['pin']
         off_angle = settings['off_angle']
         if not send_command(f"SV,{servo_pin},{off_angle}\n"): success = False # サーボ用コマンドは SV,pin,angle
         time.sleep(0.1)
-    for var in gas_check_vars.values(): var.set(0)
-    # HZ-ProのDIをすべてHIGHへ（Active Lowにするので待機時はHIGH）、UI更新
+    # HZ-ProのDIをすべてHIGHへ（Active Lowにするので待機時はHIGH）
     if not send_command(f"DO,{START_PIN},1\n"): success = False
     time.sleep(0.05)
     if not send_command(f"DO,{E_STOP_PIN},1\n"): success = False
-    if estop_var: estop_var.set(0)
-    # UIのロック解除、測定開始/エマストボタン状態リセット
-    toggle_ui_lock(False)
-    if start_button: start_button.config(state=tk.NORMAL, relief=tk.RAISED)
-    if estop_widget:
-        estop_widget.config(fg="black", font=("Arial", 9, "bold"))
+
+    # GUI更新（終了中は行わない）
+    if not is_closing:
+        try:
+            # チェックボックス等状態更新
+            for var in elec_check_vars.values(): var.set(0)
+            for var in master_elec_check_vars.values(): var.set(0)
+            for var in gas_check_vars.values(): var.set(0)
+            if estop_var: estop_var.set(0)
+
+            # UIのロック解除、測定開始/エマストボタン状態リセット
+            toggle_ui_lock(False)
+            if start_button: start_button.config(state=tk.NORMAL, relief=tk.RAISED)
+            if estop_widget:
+                estop_widget.config(fg="black", font=("Arial", 9, "bold"))
+
+            if 'status_label' in globals() and status_label.winfo_exists():
+                status_label.config(text="Device initialization finished.")
+
+        except tk.TclError:
+            print("Notice: GUI update skipped (Window closed).")
 
     print("Device initialization attempt finished.")
-    if 'status_label' in globals() and status_label.winfo_exists():
-        status_label.config(text="Device initialization finished.")
     return success
 
 """ 測定中UIをロックする処理 """
 def toggle_ui_lock(is_locked): # True：ロック、False：解除
+    if is_closing: return
+
     # エマストのみ操作可能
     allowed_widgets = [estop_widget]
 
@@ -202,7 +247,7 @@ def toggle_ui_lock(is_locked): # True：ロック、False：解除
 
 """ 一括操作チェックボックスがクリックされたときの処理 """
 def on_master_checkbox_click(cell_name):
-    if not (ser and ser.is_open): return
+    if not (ser and ser.is_open) or is_closing: return
 
     state = master_elec_check_vars[cell_name].get()
     electrodes_in_cell = CELLS_AND_ELECTRODES[cell_name]
@@ -212,6 +257,7 @@ def on_master_checkbox_click(cell_name):
             if elec_check_vars[elec_name].get() == 1:
                 elec_check_vars[elec_name].set(0)
                 on_check_click(elec_name, update_gui=False)
+
     else:
         # 他のセルをすべて切断する
         for other_cell_name in CELLS_AND_ELECTRODES:
@@ -233,7 +279,7 @@ def on_master_checkbox_click(cell_name):
 
 """ 電極チェックボックスがクリックされたときの処理 """
 def on_check_click(clicked_elec_name, update_gui=True):
-    if not (ser and ser.is_open): return
+    if not (ser and ser.is_open) or is_closing: return
 
     new_state = elec_check_vars[clicked_elec_name].get()
     pin_number = ELECTRODE_MAP.get(clicked_elec_name)
@@ -250,6 +296,7 @@ def on_check_click(clicked_elec_name, update_gui=True):
     if new_state == 0:
         # この電極を切断する
         send_command(f"DO,{pin_number},0\n")
+
     else:
         channel_name = REVERSE_ELEC_EXCLUSIVE_CHANNELS.get(clicked_elec_name)
         # 接続したい電極が排他チャンネルに入っていなかった場合
@@ -270,20 +317,21 @@ def on_check_click(clicked_elec_name, update_gui=True):
         send_command(f"DO,{pin_number},1\n")
 
     # 一括操作以外の場合ではログを表示
-    if update_gui:
+    if update_gui and not is_closing:
         action_text = "Connected" if new_state == 1 else "Disconnected"
         status_label.config(text=f"{action_text} {clicked_elec_name}.")
         update_all_master_checkboxes()
 
 """ 親チェックボックスの状態を矛盾がないように更新する """
 def update_all_master_checkboxes():
+    if is_closing: return
     for cell_name, electrodes_in_cell in CELLS_AND_ELECTRODES.items():
         are_all_electrodes_connected = all(elec_check_vars[elec_name].get() == 1 for elec_name in electrodes_in_cell)
         master_elec_check_vars[cell_name].set(1 if are_all_electrodes_connected else 0)
 
 """ ガスチェックボックスがクリックされたときの処理 """
 def on_gas_check_click(clicked_gasline_name, update_gui=True):
-    if not (ser and ser.is_open): return
+    if not (ser and ser.is_open) or is_closing: return
 
     new_state = gas_check_vars[clicked_gasline_name].get()
     servo_info = SERVO_MAP.get(clicked_gasline_name)
@@ -315,13 +363,13 @@ def on_gas_check_click(clicked_gasline_name, update_gui=True):
         send_command(f"SV,{servo_info['pin']},{servo_info['on_angle']}\n")
 
     # ログを表示（現時点では常にTrue）
-    if update_gui:
+    if update_gui and not is_closing:
         action_text = "Opened" if new_state == 1 else "Closed"
         status_label.config(text=f"Gas line {clicked_gasline_name} {action_text}.")
 
 """ 測定開始ボタンが押されたときの処理 """
 def start_measurement():
-    if not (ser and ser.is_open): return
+    if not (ser and ser.is_open) or is_closing: return
     # Active LowなのでLOWを送ってONにする
     send_command(f"DO,{START_PIN},0\n")
     # UI、測定開始ボタンをロック
@@ -331,7 +379,7 @@ def start_measurement():
 
 """ エマストボタンが押されたときの処理 """
 def on_estop_click():
-    if not (ser and ser.is_open): return
+    if not (ser and ser.is_open) or is_closing: return
     
     # ユーザーが押してONにしたときのみ動作
     if estop_var.get() == 1:
@@ -359,17 +407,27 @@ def on_estop_click():
 
 """ プログラム進行中、エラーの際にGUI上の全ウィジェットを無効化する """
 def disable_all_widgets_on_error():
+    if is_closing: return
     for widget in all_widgets:
         widget.config(state=tk.DISABLED)
     if start_button: start_button.config(state=tk.DISABLED)
 
 """ 正常にプログラムを終了する """
 def on_closing():
+    global is_closing
+
+    print("\n--- Closing Application ---")
+    is_closing = True
+
     if ser and ser.is_open:
+        print("Resetting devices...")
         initialize_all_devices()
+
         ser.close()
         print("Serial port closed.")
+
     window.destroy()
+    print("Application closed.")
 
 # --- メインの実行部分 ---
 
@@ -449,13 +507,21 @@ if __name__ == '__main__':
                              command=on_estop_click)
         estop_widget.pack(pady=2)
 
-        # 初期化ボタン
+        # リセット関係
         bottom_frame = tk.Frame(window)
         bottom_frame.pack(side=tk.BOTTOM, pady=10, fill=tk.X, padx=10)
 
-        initialize_button = tk.Button(bottom_frame, text="Initialize All Devices", command=initialize_all_devices)
-        initialize_button.pack()
+        # 初期化ボタン
+        initialize_button = tk.Button(bottom_frame, text="Initialize All Devices", command=initialize_all_devices,
+                                      width=20, height=2)
+        initialize_button.pack(side=tk.LEFT, padx=20)
         all_widgets.append(initialize_button)
+
+        # 終了ボタン
+        quit_button = tk.Button(bottom_frame, text="Exit Application", command=on_closing, 
+                                width=20, height=2)
+        quit_button.pack(side=tk.RIGHT, padx=20)
+        all_widgets.append(quit_button)
 
         # ログ表示のためのラベル
         status_label = tk.Label(window, text="Connecting...", bd=1, relief=tk.SUNKEN, anchor=tk.W)
