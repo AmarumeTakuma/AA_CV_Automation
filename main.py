@@ -1,47 +1,78 @@
 import tkinter as tk
 from tkinter import messagebox
 import serial
+import serial.tools.list_ports
 import time
+
+# 定義
 
 # Arduinoが接続されているCOMポートとボーレート
 SERIAL_PORT = "COM5"
 BAUDRATE = 9600
 
-# --- ルールブックの定義 ---
-
 # 各電極、各サーボモータ、HZ-ProとArduinoのピン番号の対応
 # 0番ピンと1番ピンは通信に使われるので使用不可、サーボモータはPWM対応のピンへ
-ELECTRODE_MAP = {
-    'Cell A-WE': 2, 'Cell A-CE': 4, 'Cell A-RE': 7,
-    'Cell B-WE': 8, 'Cell B-CE': 10, 'Cell B-RE': 12,
+CELL_DEFINITIONS = {
+    'Cell A': {'WE': 2,  'CE': 3,  'RE': 4},
+    'Cell B': {'WE': 8,  'CE': 9,  'RE': 10},
+    # 'Cell C': {'WE': 14, 'CE': 15, 'RE': 16},
 }
 # 'half_angle': 45などと追加すれば拡張機能として利用できる。ただしキーの名前に"angle"を含ませること
+# 排他制御したいラインには 'group' を指定する
 SERVO_MAP = {
-    'Gas Line A': {'pin': 3,  'on_angle': 90, 'off_angle': 0},
-    'Gas Line B': {'pin': 5,  'on_angle': 90, 'off_angle': 0},
-    'Gas Purge':  {'pin': 6, 'on_angle': 90, 'off_angle': 0},
+    'Gas Line A': {'pin': 5,  'on_angle': 90, 'off_angle': 0, 'group': 'Gas Channel'},
+    'Gas Line B': {'pin': 6,  'on_angle': 90, 'off_angle': 0, 'group': 'Gas Channel'},
+    # 'Gas Line C': {'pin': 20,  'on_angle': 90, 'off_angle': 0, 'half_angle': 45, 'group': 'Gas Channel'},
+    'Gas Purge':  {'pin': 7, 'on_angle': 90, 'off_angle': 0},
 }
 # HZ-Pro
 START_PIN = 11 # DI1
-E_STOP_PIN = 13 # CELL-OPEN-IN
+E_STOP_PIN = 12 # CELL-OPEN-IN
 
-# 各電極がどのセルに属するかの定義
-CELLS_AND_ELECTRODES = {
-    'Cell A': ['Cell A-WE', 'Cell A-CE', 'Cell A-RE'],
-    'Cell B': ['Cell B-WE', 'Cell B-CE', 'Cell B-RE'],
-}
-# 同種の電極のピンが同時に接続されないように設定する排他チャンネル
-ELEC_EXCLUSIVE_CHANNELS = {
-    'WE Channel': ['Cell A-WE', 'Cell B-WE'],
-    'CE Channel': ['Cell A-CE', 'Cell B-CE'],
-    'RE Channel': ['Cell A-RE', 'Cell B-RE'],
-}
-# ガスラインの排他チャンネル
-GAS_EXCLUSIVE_CHANNELS = {
-    'Gas Channel': ['Gas Line A', 'Gas Line B']
-}
+# 安全のための制約
+STANDARD_BAUDRATES = [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200] # ボーレートの標準値
+REQUIRED_ELECTRODES = {'WE', 'CE', 'RE'} # 電極構成
+MAX_PIN_NUMBER = 70 # ピン番号の最大値（誤入力防止）
+PROHIBITED_PINS = [0, 1] # 使用禁止ピン（通信用 RX/TX）
+BUILTIN_LED_PIN = 13 # 警告対象ピン（起動時にLチカするピン）
+MIN_ANGLE_DIFF = 5 # サーボのON/OFF角度の最低差（不感帯対策）
 
-# 逆引き辞書を自動生成
+# 以下自動生成のため変更は不要
+
+# 電極
+ELECTRODE_MAP = {} # 各電極とピンの対応（例: 'Cell A-WE': 2）
+CELLS_AND_ELECTRODES = {} # 各電極がどのセルに属するかの定義（例: 'Cell A': ['Cell A-WE', 'Cell A-CE', 'Cell A-RE']）
+ELEC_EXCLUSIVE_CHANNELS = {'WE Channel': [], 'CE Channel': [], 'RE Channel': []} # 同種の電極のピンが同時に接続されないように設定する排他チャンネル（例: 'WE Channel': ['Cell A-WE', 'Cell B-WE'],）
+
+for cell_name, pins in CELL_DEFINITIONS.items():
+    elec_list = []
+    for elec_type, pin in pins.items():
+        full_name = f"{cell_name}-{elec_type}" # 例: Cell A-WE
+
+        ELECTRODE_MAP[full_name] = pin
+        
+        elec_list.append(full_name) # CELLS_AND_ELECTRODES のためのリスト作成
+        
+        # 排他チャンネルへの割り振り
+        channel_key = f"{elec_type} Channel"
+        if channel_key in ELEC_EXCLUSIVE_CHANNELS:
+            ELEC_EXCLUSIVE_CHANNELS[channel_key].append(full_name)
+            
+    CELLS_AND_ELECTRODES[cell_name] = elec_list
+
+# ガスラインの排他チャンネル（例: 'Gas Channel': ['Gas Line A', 'Gas Line B']）
+GAS_EXCLUSIVE_CHANNELS = {}
+
+for gas_name, settings in SERVO_MAP.items():
+    if 'group' in settings:
+        group_name = settings['group']
+        
+        if group_name not in GAS_EXCLUSIVE_CHANNELS:
+            GAS_EXCLUSIVE_CHANNELS[group_name] = []
+            
+        GAS_EXCLUSIVE_CHANNELS[group_name].append(gas_name)
+
+# 排他チャンネルの逆引き辞書
 REVERSE_ELEC_EXCLUSIVE_CHANNELS = {}
 for elec_channel_name, elec_names in ELEC_EXCLUSIVE_CHANNELS.items():
     for elec_name in elec_names:
@@ -55,8 +86,10 @@ for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
 # --- グローバル変数 ---
 
 ser = None
-is_closing = False
+is_measuring = False # 測定中フラグ
+is_closing = False # アプリ終了中フラグ
 
+# GUIの状態管理
 elec_check_vars = {}
 master_elec_check_vars = {}
 gas_check_vars = {}
@@ -69,37 +102,62 @@ all_widgets = []
 
 """ ルールブックの整合性をチェックする """
 def validate_configuration():
-    # 辞書の名前の整合性チェック
-    all_elec_names = set(ELECTRODE_MAP.keys())
-    # セルと属する電極の整合性チェック
-    for cells_name, elec_names_in_cell in CELLS_AND_ELECTRODES.items():
-        for elec_name in elec_names_in_cell:
-            if elec_name not in all_elec_names:
-                return f"Config Error: Electrode '{elec_name}' in '{cells_name}' not found in ELECTRODE_MAP."
-    # 電極排他チャンネルの整合性チェック
-    for elec_channel_name, elec_names_in_channel in ELEC_EXCLUSIVE_CHANNELS.items():
-        for elec_name in elec_names_in_channel:
-            if elec_name not in all_elec_names:
-                return f"Config Error: Electrode '{elec_name}' in '{elec_channel_name}' not found in ELECTRODE_MAP."
+    # 設定が空ならエラー
+    if not CELL_DEFINITIONS and not SERVO_MAP:
+        return "Config Error: No Cells and No Gas Lines defined.\nPlease configure CELL_DEFINITIONS or SERVO_MAP."
 
-    all_gasline_names = set(SERVO_MAP.keys())
-    # サーボモータについて値の設定と角度の妥当性をチェック
+    # 電極設定のチェック
+
+    for cell_name, pins in CELL_DEFINITIONS.items():
+        defined_types = set(pins.keys())
+        missing_electrodes = REQUIRED_ELECTRODES - defined_types
+        
+        # WE（作用極）がない場合はエラー
+        if 'WE' in missing_electrodes:
+            return f"Config Error: '{cell_name}' is missing 'WE' (Working Electrode).\nEvery cell must have a WE."
+            
+        # CE（対極）やRE（参照極）がない場合は警告
+        if missing_electrodes:
+            missing_str = ", ".join(missing_electrodes)
+            warn_msg = f"Config Warning: '{cell_name}' is missing electrodes: [{missing_str}].\nStandard CV requires WE, CE, and RE.\n(Ignore this if using 2-electrode setup)"
+            messagebox.showwarning("Configuration Warning", warn_msg)
+        
+    # すべての電極がいずれかの排他チャンネルに登録されているかチェック（電極名のタイプミスを検知）
+    registered_electrodes = set()
+    for elec_list in ELEC_EXCLUSIVE_CHANNELS.values():
+        for elec in elec_list:
+            registered_electrodes.add(elec)
+    for defined_elec in ELECTRODE_MAP.keys():
+        if defined_elec not in registered_electrodes:
+            return f"Safety Error: Electrode '{defined_elec}' is defined but NOT assigned to any Exclusive Channel.\nCheck for typos in CELL_DEFINITIONS (e.g. 'we' vs 'WE')."
+
+    # サーボモータ設定のチェック
+
     for gasline_name, settings in SERVO_MAP.items():
+        # オンオフ角度が存在することをチェック
         if 'pin' not in settings or 'on_angle' not in settings or 'off_angle' not in settings:
             return f"Config Error: Gas line '{gasline_name}' in GAS_SERVO_MAP is missing essential settings."
-        # 'angle'が含まれるすべての角度をチェック
+        
+        # それらがの差が小さすぎないことをチェック
+        angle_diff = abs(settings['on_angle'] - settings['off_angle'])
+        if angle_diff < MIN_ANGLE_DIFF:
+            return f"Config Warning: Gas line '{gasline_name}' angles are too close (Diff: {angle_diff}°).\nMechanical backlash may prevent reliable switching.\nRecommended difference is > {MIN_ANGLE_DIFF}°."
+        
+        # 'angle'が含まれるすべての角度が適切かチェック
         for key, value in settings.items():
             if 'angle' in key:
                 if not (isinstance(value, int) and 0 <= value <= 180):
                     return f"Config Error: '{key}' for '{gasline_name}' must be an integer between 0 and 180."
-    # ガスライン排他チャンネルの整合性チェック
-    for gas_channel_name, gasline_name_in_channel in GAS_EXCLUSIVE_CHANNELS.items():
-        for gasline_name in gasline_name_in_channel:
-            if gasline_name not in all_gasline_names:
-                return f"Config Error: Gas line '{gasline_name}' in '{gas_channel_name}' not found in SERVO_MAP."
+    
+    # ガスラインに、メンバーが1つだけのグループがないかチェック（グループ名のタイプミスを検知）
+    for group_name, members in GAS_EXCLUSIVE_CHANNELS.items():
+        if len(members) < 2:
+            return f"Safety Warning: Gas Group '{group_name}' has only 1 member ({members}).\nExclusive control requires at least 2 members.\nCheck for typos in 'group' name in SERVO_MAP."
             
-    # ピンの重複チェック
-    pin_usage = {} 
+    # ピン設定のチェック（ピンのタイプミスを検知）
+
+    # 重複チェック
+    pin_usage = {} # 使用されているピン一覧（例: 2: 'Cell A-WE'）
     # 電極のピンをチェック
     for name, pin in ELECTRODE_MAP.items():
         if pin in pin_usage:
@@ -119,6 +177,41 @@ def validate_configuration():
         return f"Config Error: E-STOP Pin {E_STOP_PIN} is duplicated. Used by '{pin_usage[E_STOP_PIN]}'."
     pin_usage[E_STOP_PIN] = "E-STOP Pin"
 
+    for pin, user in pin_usage.items():
+        # 通信用ピン(0, 1)の使用禁止チェック
+        if pin in PROHIBITED_PINS:
+            return f"Safety Error: Pin {pin} is reserved for Serial Communication (RX/TX).\nUsed by '{user}'.\nPlease use Pin 2 or higher."
+
+        # 型と範囲のチェック（整数 かつ 0以上70以下）
+        if not (isinstance(pin, int) and 0 <= pin <= MAX_PIN_NUMBER):
+            return f"Config Error: Pin '{pin}' used by '{user}' is invalid.\nPin must be an integer between 0 and {MAX_PIN_NUMBER}.\n(Check for typos or negative numbers)"
+        
+    # Pin 13の使用を警告（起動時にLEDが点滅するため、リレーや弁を繋ぐと暴走するリスクがある）
+    if BUILTIN_LED_PIN in pin_usage:
+        user = pin_usage[BUILTIN_LED_PIN]
+        warn_msg = f"Safety Warning: Pin {BUILTIN_LED_PIN} is used by '{user}'.\nPin 13 toggles during Arduino boot (builtin LED).\nThis may cause unexpected actuation on startup.\nRecommend using another pin."
+        messagebox.showwarning("Configuration Warning", warn_msg)
+
+    # ボーレートの標準値チェック（警告）
+    if BAUDRATE not in STANDARD_BAUDRATES:
+        warn_msg = f"Config Warning: BAUDRATE {BAUDRATE} is non-standard.\nStandard values: {STANDARD_BAUDRATES}.\nCheck connection settings if communication fails."
+        messagebox.showwarning("Configuration Warning", warn_msg)
+
+    # 指定されたCOMポートが現在PCに認識されているか確認する
+    try:
+        # PC上の全ポートを取得
+        available_ports = [p.device for p in serial.tools.list_ports.comports()]
+        
+        if SERIAL_PORT not in available_ports:
+            # 認識されているポート一覧を見やすく整形
+            ports_str = ", ".join(available_ports) if available_ports else "None"
+            
+            warn_msg = f"Config Warning: Port '{SERIAL_PORT}' is NOT detected on this PC.\nAvailable ports: [{ports_str}].\nPlease check the USB connection or SERIAL_PORT setting."
+            messagebox.showwarning("Connection Warning", warn_msg)        
+    except Exception as e:
+        # この機能がOS環境等で失敗してもアプリの起動は止めない
+        print(f"Port check skipped due to error: {e}")
+    
     return None
 
 """ Arduinoとの通信を試みる """
@@ -143,17 +236,41 @@ def connect_to_arduino():
             messagebox.showerror("Connection Error", f"Could not open port {SERIAL_PORT}.\n\nPlease check connection.\n\nError: {e}")
             window.destroy()
 
-""" Arduinoにコマンドを送信する """
+""" Arduinoにコマンドを送信し、成功ログを待つ """
 def send_command(command_to_send):
     if not (ser and ser.is_open):
         if not is_closing:
             status_label.config(text="Error: Not connected.")
         return False
     
-    try:
-        ser.write(command_to_send.encode())
+    try:        
+        ser.reset_input_buffer() # バッファに残っている古いデータをクリア
+        
+        ser.write(command_to_send.encode()) # コマンド送信
         print(f"Sent: {command_to_send.strip()}")
-        return True
+
+        start_time = time.time()
+        timeout = 1.0 # デッドラインは1秒
+
+        while (time.time() - start_time) < timeout:
+            if ser.in_waiting > 0:
+                # データを読み取り、デコードして表示
+                line = ser.readline().decode('utf-8', errors='replace').strip()
+                
+                # "executed"が含まれているかチェック
+                if "executed" in line.lower():
+                    # print(f"Ack Received: {line}")
+                    return True
+                
+            time.sleep(0.01)
+
+        # タイムアウト
+        print(f"Timeout: No 'executed' response for '{command_to_send.strip()}'")
+        if not is_closing: # 終了中はエラーを出さない
+            status_label.config(text="Communication unstable: No response.")
+            messagebox.showwarning("Communication Warning", 
+                                   f"Device did not respond (No 'executed' message).\n\nCommand: {command_to_send}")
+        return False
     
     except serial.SerialException as e:
         if not is_closing: # 終了中はエラーを出さない
@@ -170,10 +287,13 @@ def check_serial_input():
         try:
             # 受信データがあるか確認
             while ser.in_waiting > 0:
-                # データを読み取り、デコードして表示
                 line = ser.readline().decode('utf-8', errors='replace').strip()
                 if line:
                     print(f"[Arduino] {line}")
+
+                    # 測定終了処理
+                    if "MEASUREMENT_END" in line:
+                        finish_measurement()
                     
         except Exception as e:
             print(f"Serial Read Error: {e}")
@@ -369,13 +489,46 @@ def on_gas_check_click(clicked_gasline_name, update_gui=True):
 
 """ 測定開始ボタンが押されたときの処理 """
 def start_measurement():
+    global is_measuring
+
     if not (ser and ser.is_open) or is_closing: return
+
     # Active LowなのでLOWを送ってONにする
     send_command(f"DO,{START_PIN},0\n")
     # UI、測定開始ボタンをロック
     toggle_ui_lock(True)
     start_button.config(state=tk.DISABLED, relief=tk.SUNKEN)
     status_label.config(text="Measurement STARTED. Waiting for manual stop (Press E-STOP).")
+
+    is_measuring = True
+
+""" 測定終了時リセット用共通処理（UIと測定開始ピンを待機状態に戻す） """
+def reset_to_ready_state():
+    global is_measuring
+
+    if is_closing: return
+
+    is_measuring = False
+    
+    toggle_ui_lock(False)
+    if start_button:
+        start_button.config(state=tk.NORMAL, relief=tk.RAISED)
+    # 測定開始トリガーピンをHIGHに戻しておく
+    if ser and ser.is_open:
+        send_command(f"DO,{START_PIN},1\n")
+
+""" 正常に測定が終了したときの処理（Arduinoからの信号でトリガー） """
+def finish_measurement():
+    if is_closing: return
+
+    if not is_measuring:
+        print("Ignored 'MEASUREMENT_END' signal (Not in measuring state).")
+        return
+    
+    reset_to_ready_state() # 共通処理
+
+    status_label.config(text="Measurement COMPLETED. Ready for next run.")
+    print("Measurement finished signal received.")
 
 """ エマストボタンが押されたときの処理 """
 def on_estop_click():
@@ -389,16 +542,12 @@ def on_estop_click():
         status_label.config(text="Measurement ABORTED via E-STOP. Device Reset.")
         window.update() # GUIを強制更新して表示を反映
         time.sleep(0.5)
-        send_command(f"DO,{E_STOP_PIN},1\n")
+        send_command(f"DO,{E_STOP_PIN},1\n") 
         
-        # 測定開始されないように
-        send_command(f"DO,{START_PIN},1\n") 
+        reset_to_ready_state() # 共通処理
         
-        # UI、測定開始ボタン、エマストボタンのロック解除
-        toggle_ui_lock(False)
-        start_button.config(state=tk.NORMAL, relief=tk.RAISED)
+        # 固有のUIリセット
         estop_var.set(0)
-        
         estop_widget.config(fg="black", font=("Arial", 9, "bold"))
         status_label.config(text="E-STOP Released. Ready for next measurement.")
     else:
@@ -501,9 +650,9 @@ if __name__ == '__main__':
 
         # E-STOP ボタン
         estop_var = tk.IntVar(value=0)
-        estop_widget = tk.Checkbutton(measurement_frame, text="E-STOP", bg="#ffcccc", variable=estop_var, 
+        estop_widget = tk.Checkbutton(measurement_frame, text="E-STOP [Esc]", bg="#ffcccc", variable=estop_var, 
                              indicatoron=0, selectcolor="red", 
-                             width=15, height=2, fg="black", font=("Arial", 9, "bold"),
+                             width=20, height=2, fg="black", font=("Arial", 9, "bold"),
                              command=on_estop_click)
         estop_widget.pack(pady=2)
 
@@ -529,5 +678,7 @@ if __name__ == '__main__':
         
         window.protocol("WM_DELETE_WINDOW", on_closing)
         window.after(100, connect_to_arduino)
+
+        window.bind('<Escape>', lambda e: (estop_var.set(1), on_estop_click()))
         
         window.mainloop()
