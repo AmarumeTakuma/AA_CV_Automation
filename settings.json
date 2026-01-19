@@ -1,0 +1,39 @@
+{
+  "system": {
+    "port": "COM5",
+    "baudrate": 9600
+  },
+  "pins": {
+    "start": 11,
+    "estop": 12
+  },
+  "cells": {
+    "Cell A": {"WE": 2, "CE": 3, "RE": 4},
+    "Cell B": {"WE": 8, "CE": 9, "RE": 10}
+  },
+  "servos": {
+    "Gas Line A": {
+      "pin": 5, 
+      "on": 90, 
+      "off": 0, 
+      "group": "Gas Channel"
+    },
+    "Gas Line B": {
+      "pin": 6, 
+      "on": 90, 
+      "off": 0, 
+      "group": "Gas Channel"
+    },
+    "Gas Purge": {
+      "pin": 7, 
+      "on": 90, 
+      "off": 0
+    }
+  },
+  "safety": {
+    "max_pin": 70,
+    "prohibited_pins": [0, 1],
+    "builtin_led_pin": 13,
+    "min_angle_diff": 5
+  }
+}

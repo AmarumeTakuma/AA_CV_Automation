@@ -219,3 +219,6 @@ Thumbs.db
 *.exe
 *.o
 *.obj
+
+# 自動生成されるファイル
+arduino_firmware/config.h
