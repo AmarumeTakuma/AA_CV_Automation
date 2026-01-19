@@ -14,20 +14,20 @@
   "servos": {
     "Gas Line A": {
       "pin": 5, 
-      "on": 90, 
-      "off": 0, 
+      "on_angle": 90, 
+      "off_angle": 0, 
       "group": "Gas Channel"
     },
     "Gas Line B": {
       "pin": 6, 
-      "on": 90, 
-      "off": 0, 
+      "on_angle": 90, 
+      "off_angle": 0, 
       "group": "Gas Channel"
     },
     "Gas Purge": {
       "pin": 7, 
-      "on": 90, 
-      "off": 0
+      "on_angle": 90, 
+      "off_angle": 0
     }
   },
   "safety": {

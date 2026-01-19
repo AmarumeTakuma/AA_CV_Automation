@@ -3,46 +3,38 @@ from tkinter import messagebox
 import serial
 import serial.tools.list_ports
 import time
+import json
+import os
+import sys
 
 # 定義
 
 # Arduinoが接続されているCOMポートとボーレート
-SERIAL_PORT = "COM5"
-BAUDRATE = 9600
+SERIAL_PORT = ""
+BAUDRATE = 0
 
 # 各電極、各サーボモータ、HZ-ProとArduinoのピン番号の対応
-# 0番ピンと1番ピンは通信に使われるので使用不可、サーボモータはPWM対応のピンへ
-CELL_DEFINITIONS = {
-    'Cell A': {'WE': 2,  'CE': 3,  'RE': 4},
-    'Cell B': {'WE': 8,  'CE': 9,  'RE': 10},
-    # 'Cell C': {'WE': 14, 'CE': 15, 'RE': 16},
-}
-# 'half_angle': 45などと追加すれば拡張機能として利用できる。ただしキーの名前に"angle"を含ませること
-# 排他制御したいラインには 'group' を指定する
-SERVO_MAP = {
-    'Gas Line A': {'pin': 5,  'on_angle': 90, 'off_angle': 0, 'group': 'Gas Channel'},
-    'Gas Line B': {'pin': 6,  'on_angle': 90, 'off_angle': 0, 'group': 'Gas Channel'},
-    # 'Gas Line C': {'pin': 20,  'on_angle': 90, 'off_angle': 0, 'half_angle': 45, 'group': 'Gas Channel'},
-    'Gas Purge':  {'pin': 7, 'on_angle': 90, 'off_angle': 0},
-}
-# HZ-Pro
-START_PIN = 11 # DI1
-E_STOP_PIN = 12 # CELL-OPEN-IN
+START_PIN = 0 # DI1
+E_STOP_PIN = 0 # CELL-OPEN-IN
+CELL_DEFINITIONS = {}
+SERVO_MAP = {}
 
 # 安全のための制約
 STANDARD_BAUDRATES = [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200] # ボーレートの標準値
 REQUIRED_ELECTRODES = {'WE', 'CE', 'RE'} # 電極構成
-MAX_PIN_NUMBER = 70 # ピン番号の最大値（誤入力防止）
-PROHIBITED_PINS = [0, 1] # 使用禁止ピン（通信用 RX/TX）
-BUILTIN_LED_PIN = 13 # 警告対象ピン（起動時にLチカするピン）
-MIN_ANGLE_DIFF = 5 # サーボのON/OFF角度の最低差（不感帯対策）
+MAX_PIN_NUMBER = 0 # ピン番号の最大値（誤入力防止）
+PROHIBITED_PINS = [] # 使用禁止ピン（通信用 RX/TX）
+BUILTIN_LED_PIN = 0 # 警告対象ピン（起動時にLチカするピン）
+MIN_ANGLE_DIFF = 0 # サーボのON/OFF角度の最低差（不感帯対策）
 
-# 以下自動生成のため変更は不要
-
-# 電極
+# 自動生成の辞書
 ELECTRODE_MAP = {} # 各電極とピンの対応（例: 'Cell A-WE': 2）
 CELLS_AND_ELECTRODES = {} # 各電極がどのセルに属するかの定義（例: 'Cell A': ['Cell A-WE', 'Cell A-CE', 'Cell A-RE']）
-ELEC_EXCLUSIVE_CHANNELS = {'WE Channel': [], 'CE Channel': [], 'RE Channel': []} # 同種の電極のピンが同時に接続されないように設定する排他チャンネル（例: 'WE Channel': ['Cell A-WE', 'Cell B-WE'],）
+ELEC_EXCLUSIVE_CHANNELS = {} # 同種の電極のピンが同時に接続されないように設定する排他チャンネル（例: 'WE Channel': ['Cell A-WE', 'Cell B-WE'],）
+GAS_EXCLUSIVE_CHANNELS = {} # ガスラインの排他チャンネル（例: 'Gas Channel': ['Gas Line A', 'Gas Line B']）
+# 排他チャンネルの逆引き辞書
+REVERSE_ELEC_EXCLUSIVE_CHANNELS = {}
+REVERSE_GAS_EXCLUSIVE_CHANNELS = {}
 
 for cell_name, pins in CELL_DEFINITIONS.items():
     elec_list = []
@@ -60,9 +52,6 @@ for cell_name, pins in CELL_DEFINITIONS.items():
             
     CELLS_AND_ELECTRODES[cell_name] = elec_list
 
-# ガスラインの排他チャンネル（例: 'Gas Channel': ['Gas Line A', 'Gas Line B']）
-GAS_EXCLUSIVE_CHANNELS = {}
-
 for gas_name, settings in SERVO_MAP.items():
     if 'group' in settings:
         group_name = settings['group']
@@ -72,13 +61,10 @@ for gas_name, settings in SERVO_MAP.items():
             
         GAS_EXCLUSIVE_CHANNELS[group_name].append(gas_name)
 
-# 排他チャンネルの逆引き辞書
-REVERSE_ELEC_EXCLUSIVE_CHANNELS = {}
 for elec_channel_name, elec_names in ELEC_EXCLUSIVE_CHANNELS.items():
     for elec_name in elec_names:
         REVERSE_ELEC_EXCLUSIVE_CHANNELS[elec_name] = elec_channel_name
 
-REVERSE_GAS_EXCLUSIVE_CHANNELS = {}
 for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
     for gasline_name in gasline_names:
         REVERSE_GAS_EXCLUSIVE_CHANNELS[gasline_name] = gas_channel_name
