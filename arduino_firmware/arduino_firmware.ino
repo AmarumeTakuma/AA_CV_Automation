@@ -1,56 +1,55 @@
 #include <Servo.h>
+#include "config.h"
 
-// ボーレート
-const int BAUDRATE = 9600;
+// 定数定義 (とりあえずここにハードコードして動かす）
+const int MAX_SERVOS = 12; 
+const int MAX_DIGITAL_PINS = 60; 
 
-// --- ピン番号定義 ---
-// Cell A
-const int CELL_A_WE_PIN = 2;
-const int CELL_A_CE_PIN = 3;
-const int CELL_A_RE_PIN = 4;
-// Cell B
-const int CELL_B_WE_PIN = 8;
-const int CELL_B_CE_PIN = 9;
-const int CELL_B_RE_PIN = 10;
+// デジタルピン管理（使ったピンを記録）
+int activeDigitalPins[MAX_DIGITAL_PINS];
+int digitalPinCount = 0;
 
-// まとめて初期化するための配列
-const int ALL_ELECTRODE_PINS[] = {
-  CELL_A_WE_PIN, CELL_A_CE_PIN, CELL_A_RE_PIN,
-  CELL_B_WE_PIN, CELL_B_CE_PIN, CELL_B_RE_PIN
-};
-const int ELECTRODE_COUNT = sizeof(ALL_ELECTRODE_PINS) / sizeof(ALL_ELECTRODE_PINS[0]);
+// サーボ管理
+Servo servos[MAX_SERVOS];
+int servoPins[MAX_SERVOS];
+int servoCount = 0;
+int servoOffAngles[MAX_SERVOS];
 
-// --- 排他制御 (インターロック) 設定 ---
-// ※現在は定義のみ。Arduino側で強制チェックしたい場合はロジック追加が必要
-const int EXCLUSIVE_PAIRS[][2] = {
-  {CELL_A_WE_PIN, CELL_B_WE_PIN}, // WE同士
-  {CELL_A_CE_PIN, CELL_B_CE_PIN}, // CE同士
-  {CELL_A_RE_PIN, CELL_B_RE_PIN}  // RE同士
-};
-const int PAIR_COUNT = sizeof(EXCLUSIVE_PAIRS) / sizeof(EXCLUSIVE_PAIRS[0]);
-
-// Gas Line
-const int SERVO_A_PIN = 5;      // Python: 'Gas Line A'
-const int SERVO_B_PIN = 6;      // Python: 'Gas Line B'
-const int SERVO_PURGE_PIN = 7;  // Python: 'Gas Purge'
-
-// HZ-Pro
-const int START_PIN = 11; // Python: START_PIN
-const int E_STOP_PIN = 12; // Python: E_STOP_PIN
-const int DONE_PIN = 13; // Python: STOP_PIN (Input)
-
-// サーボの初期位置
-const int SERVO_OFF_ANGLE = 0;
-
-// Servoインスタンス
-Servo servoA;      // Gas Line A用
-Servo servoB;      // Gas Line B用
-Servo servoPurge;  // Gas Purge用
-
-int lastDoneState = HIGH; // 信号状態記憶用変数
+// 終了信号用（必要であれば使用）
+const int DONE_PIN = 13;
+int lastDoneState = HIGH;
 
 void setup() {
-  Serial.begin(BAUDRATE);
+  // config.h に BAUDRATE が定義されていればそれを使い、なければ9600
+  #ifdef BAUDRATE
+    Serial.begin(BAUDRATE);
+  #else
+    Serial.begin(9600);
+  #endif
+
+  pinMode(DONE_PIN, INPUT_PULLUP);
+
+  // 管理配列の初期化
+  for(int i=0; i<MAX_SERVOS; i++) { servoPins[i] = -1; servoOffAngles[i] = 0; }
+  for(int i=0; i<MAX_DIGITAL_PINS; i++) { activeDigitalPins[i] = -1; }
+
+  // Configからサーボのデフォルト角度を事前に読み込む
+  #ifdef SERVO_COUNT_DEF
+    for(int i=0; i<SERVO_COUNT_DEF; i++) {
+      int pin = SERVO_DEFAULTS[i][0];
+      int angle = SERVO_DEFAULTS[i][1];
+      if(pin != -1) {
+         int idx = getServoIndex(pin); 
+         if(idx != -1) {
+             servoOffAngles[idx] = angle;
+         }
+      }
+    }
+  #endif
+
+
+
+
 
   // 電極の初期化
   for (int i = 0; i < ELECTRODE_COUNT; i++) {

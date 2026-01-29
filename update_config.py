@@ -40,9 +40,10 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
 
     # データの抽出
     sys_conf = data.get("system", {})
+    pins_conf = data.get("pins", {})
     cells = data.get("cells", {})
     servos = data.get("servos", {})
-    safety = data.get("safety", {})
+    # safety = data.get("safety", {})
 
     # 排他ペア
     exclusive_pairs = []
@@ -54,7 +55,6 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
             if elec_type not in electrodes_by_type:
                 electrodes_by_type[elec_type] = []
             electrodes_by_type[elec_type].append(pin)
-            
     # 総当たりでペア生成
     for elec_type, pins in electrodes_by_type.items():
         pins_sorted = sorted(list(set(pins))) # 重複排除とソート
@@ -69,6 +69,10 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
         off_angle = settings.get("off_angle", 0) # 設定がなければ0度
         servo_defaults.append((pin, off_angle))
 
+    # システムピン
+    pin_start = pins_conf.get("start", -1)
+    pin_estop = pins_conf.get("estop", -1)
+
     # 使用ピンのリスト
     valid_pins = set()
     # 電極
@@ -78,8 +82,7 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     # サーボ
     for s in servos.values():
         valid_pins.add(s['pin'])
-    # システムピン (Start/Estopなど)
-    pins_conf = data.get("pins", {})
+    # システムピン（Start/Estopなど）
     for pin in pins_conf.values():
          if isinstance(pin, int) and pin > 0: valid_pins.add(pin)
     valid_pin_list = sorted(list(valid_pins))
@@ -98,6 +101,12 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     # ボーレート (main.pyと同じデフォルト値 9600 を採用)
     baud = sys_conf.get("baudrate", 9600)
     lines.append(f"const long BAUDRATE = {baud};")
+
+    # システムピン
+    lines.append("")
+    lines.append("// --- System Control Pins ---")
+    lines.append(f"const int PIN_START = {pin_start};")
+    lines.append(f"const int PIN_ESTOP = {pin_estop};")
     
     # 排他ペア配列生成
     lines.append("")
