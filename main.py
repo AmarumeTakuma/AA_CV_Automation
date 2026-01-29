@@ -66,15 +66,15 @@ def load_settings(filename="settings.json"):
     else:
         application_path = os.path.dirname(os.path.abspath(__file__)) # .py
     
-    config_path = os.path.join(application_path, filename)
+    json_path = os.path.join(application_path, filename)
 
     # ファイルの存在確認
-    if not os.path.exists(config_path):
-        messagebox.showerror("Configuration Error", f"Configuration file not found:\n{config_path}")
+    if not os.path.exists(json_path):
+        messagebox.showerror("Configuration Error", f"Configuration file not found:\n{json_path}")
         sys.exit(1)
 
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         # System Settings
@@ -102,7 +102,7 @@ def load_settings(filename="settings.json"):
         BUILTIN_LED_PIN = safe_conf.get("builtin_led_pin", 13)
         MIN_ANGLE_DIFF = safe_conf.get("min_angle_diff", 5)
         
-        print(f"Loaded configuration file: {config_path}")
+        print(f"Loaded configuration file: {json_path}")
 
     except json.JSONDecodeError as e:
         messagebox.showerror("Configuration Error", f"Invalid JSON format:\n{e}")
@@ -189,15 +189,6 @@ def validate_configuration():
             missing_str = ", ".join(missing_electrodes)
             warn_msg = f"Config Warning: '{cell_name}' is missing electrodes: [{missing_str}].\nStandard CV requires WE, CE, and RE.\n(Ignore this if using 2-electrode setup)"
             messagebox.showwarning("Configuration Warning", warn_msg)
-        
-    # すべての電極がいずれかの排他チャンネルに登録されているかチェック（電極名のタイプミスを検知）
-    registered_electrodes = set()
-    for elec_list in ELEC_EXCLUSIVE_CHANNELS.values():
-        for elec in elec_list:
-            registered_electrodes.add(elec)
-    for defined_elec in ELECTRODE_MAP.keys():
-        if defined_elec not in registered_electrodes:
-            return f"Safety Error: Electrode '{defined_elec}' is defined but NOT assigned to any Exclusive Channel.\nCheck for typos in CELL_DEFINITIONS (e.g. 'we' vs 'WE')."
 
     # サーボモータ設定のチェック
 
@@ -649,6 +640,9 @@ def on_closing():
 # --- メインの実行部分 ---
 
 if __name__ == '__main__':
+    load_settings()
+    generate_maps()
+
     window = tk.Tk()
     window.title("Electrode Controller")
 
