@@ -1,103 +1,181 @@
 #include <Servo.h>
+#include "config.h"
 
-// ボーレート
-const int BAUDRATE = 9600;
+// 定数定義 (とりあえずここにハードコードして動かす）
+const int MAX_SERVOS = 12; 
+const int MAX_DIGITAL_PINS = 60; 
 
-// --- ピン番号定義 ---
-// Cell A
-const int CELL_A_WE_PIN = 2;
-const int CELL_A_CE_PIN = 3;
-const int CELL_A_RE_PIN = 4;
-// Cell B
-const int CELL_B_WE_PIN = 8;
-const int CELL_B_CE_PIN = 9;
-const int CELL_B_RE_PIN = 10;
+// デジタルピン管理（使ったピンを記録）
+int activeDigitalPins[MAX_DIGITAL_PINS];
+int digitalPinCount = 0;
 
-// まとめて初期化するための配列
-const int ALL_ELECTRODE_PINS[] = {
-  CELL_A_WE_PIN, CELL_A_CE_PIN, CELL_A_RE_PIN,
-  CELL_B_WE_PIN, CELL_B_CE_PIN, CELL_B_RE_PIN
-};
-const int ELECTRODE_COUNT = sizeof(ALL_ELECTRODE_PINS) / sizeof(ALL_ELECTRODE_PINS[0]);
+// サーボ管理
+Servo servos[MAX_SERVOS];
+int servoPins[MAX_SERVOS];
+int servoCount = 0;
+int servoOffAngles[MAX_SERVOS];
 
-// --- 排他制御 (インターロック) 設定 ---
-// ※現在は定義のみ。Arduino側で強制チェックしたい場合はロジック追加が必要
-const int EXCLUSIVE_PAIRS[][2] = {
-  {CELL_A_WE_PIN, CELL_B_WE_PIN}, // WE同士
-  {CELL_A_CE_PIN, CELL_B_CE_PIN}, // CE同士
-  {CELL_A_RE_PIN, CELL_B_RE_PIN}  // RE同士
-};
-const int PAIR_COUNT = sizeof(EXCLUSIVE_PAIRS) / sizeof(EXCLUSIVE_PAIRS[0]);
-
-// Gas Line
-const int SERVO_A_PIN = 5;      // Python: 'Gas Line A'
-const int SERVO_B_PIN = 6;      // Python: 'Gas Line B'
-const int SERVO_PURGE_PIN = 7;  // Python: 'Gas Purge'
-
-// HZ-Pro
-const int START_PIN = 11; // Python: START_PIN
-const int E_STOP_PIN = 12; // Python: E_STOP_PIN
-const int DONE_PIN = 13; // Python: STOP_PIN (Input)
-
-// サーボの初期位置
-const int SERVO_OFF_ANGLE = 0;
-
-// Servoインスタンス
-Servo servoA;      // Gas Line A用
-Servo servoB;      // Gas Line B用
-Servo servoPurge;  // Gas Purge用
-
-int lastDoneState = HIGH; // 信号状態記憶用変数
+// 終了信号用（必要であれば使用）
+const int DONE_PIN = 13;
+int lastDoneState = HIGH;
 
 void setup() {
-  Serial.begin(BAUDRATE);
-
-  // 電極の初期化
-  for (int i = 0; i < ELECTRODE_COUNT; i++) {
-    pinMode(ALL_ELECTRODE_PINS[i], OUTPUT);
-    digitalWrite(ALL_ELECTRODE_PINS[i], LOW);
-  }
-  
-  // サーボの初期化
-  servoA.attach(SERVO_A_PIN);
-  servoB.attach(SERVO_B_PIN);
-  servoPurge.attach(SERVO_PURGE_PIN);
-  
-  // サーボを初期位置(OFF)へ
-  servoA.write(SERVO_OFF_ANGLE);
-  servoB.write(SERVO_OFF_ANGLE);
-  servoPurge.write(SERVO_OFF_ANGLE);
-  
-  // 測定開始/エマストピン: Active Lowなので、初期値はHIGH(OFF)にしておく
-  pinMode(START_PIN, OUTPUT);
-  digitalWrite(START_PIN, HIGH);
-  
-  pinMode(E_STOP_PIN, OUTPUT);
-  digitalWrite(E_STOP_PIN, HIGH);
+  // config.h に BAUDRATE が定義されていればそれを使い、なければ9600
+  #ifdef BAUDRATE
+    Serial.begin(BAUDRATE);
+  #else
+    Serial.begin(9600);
+  #endif
 
   pinMode(DONE_PIN, INPUT_PULLUP);
+
+  // 管理配列の初期化
+  for(int i=0; i<MAX_SERVOS; i++) {
+    servoPins[i] = -1;
+    servoOffAngles[i] = 0;
+  }
+  for(int i=0; i<MAX_DIGITAL_PINS; i++) {
+    activeDigitalPins[i] = -1;
+  }
+
+  // configからサーボのデフォルト角度を読み込む
+  #ifdef SERVO_COUNT_DEF
+    for(int i=0; i<SERVO_COUNT_DEF; i++) {
+      int pin = SERVO_DEFAULTS[i][0];
+      int angle = SERVO_DEFAULTS[i][1];
+      if(pin != -1) {
+         int idx = getServoIndex(pin); 
+         if(idx != -1) {
+             servoOffAngles[idx] = angle;
+             servos[idx].write(angle); // 起動時にすぐオフ角度に
+         }
+      }
+    }
+  #endif
+
+  // システム制御ピン（Start/Estop）の安全な初期化
+  #ifdef PIN_START
+    if (PIN_START != -1) {
+      digitalWrite(PIN_START, HIGH); // 先にOFF(HIGH)状態にする
+      pinMode(PIN_START, OUTPUT);    // その後で出力モードへ
+    }
+  #endif
+  #ifdef PIN_ESTOP
+    if (PIN_ESTOP != -1) {
+      digitalWrite(PIN_ESTOP, HIGH); // 先にOFF(HIGH)状態にする
+      pinMode(PIN_ESTOP, OUTPUT);    // その後で出力モードへ
+    }
+  #endif
 
   Serial.println("Arduino Ready.");
 }
 
 void loop() {
+  // コマンド受信
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     parseCommand(command);
   }
 
-  // 測定終了信号の監視処理 (Active Low: HIGH -> LOW)
+  // 測定終了信号の監視 (Active Low: HIGH -> LOW)
   int currentDoneState = digitalRead(DONE_PIN);
   if (lastDoneState == HIGH && currentDoneState == LOW) {
       Serial.println("MEASUREMENT_END");
-      delay(50); // チャタリング防止
+      delay(50);
   }
   lastDoneState = currentDoneState;
+}
+
+// 補助関数
+
+// config.h に書かれた使っていいピンかどうかを確認
+bool isValidPin(int pin) {
+  #ifdef VALID_PIN_COUNT
+    for (int i=0; i<VALID_PIN_COUNT; i++) {
+      if (VALID_PINS[i] == pin) return true;
+    }
+    Serial.print("Error: Pin "); Serial.print(pin); Serial.println(" is NOT in whitelist.");
+    return false;
+  #else
+    return true; // configがない場合は全許可（デバッグ用）
+  #endif
+}
+
+// 排他制御チェック
+bool checkInterlock(int targetPin) {
+  #ifdef PAIR_COUNT
+    for (int i=0; i<PAIR_COUNT; i++) {
+      int pinA = EXCLUSIVE_PAIRS[i][0];
+      int pinB = EXCLUSIVE_PAIRS[i][1];
+      if (pinA == -1) continue;
+
+      // 自分がAで、相方のBが既にONならブロック
+      if (targetPin == pinA) {
+        if (digitalRead(pinB) == HIGH) {
+          Serial.print("BLOCK: Pin "); Serial.print(pinA); Serial.print(" vs ON-Pin "); Serial.println(pinB);
+          return false;
+        }
+      } 
+      // 自分がBで、相方のAが既にONならブロック
+      else if (targetPin == pinB) {
+        if (digitalRead(pinA) == HIGH) {
+          Serial.print("BLOCK: Pin "); Serial.print(pinB); Serial.print(" vs ON-Pin "); Serial.println(pinA);
+          return false;
+        }
+      }
+    }
+  #endif
+  return true;
+}
+
+int getServoIndex(int pin) {
+  // 登録済みならそのインデックスを返す
+  for(int i=0; i<servoCount; i++) {
+    if (servoPins[i] == pin) return i;
+  }
+  // 未登録なら空き枠を探す
+  if (servoCount < MAX_SERVOS) {
+    servos[servoCount].attach(pin); // ここで初めてattach
+    servoPins[servoCount] = pin;
+    servoCount++;
+    return servoCount - 1;
+  }
+  return -1; // 満員
+}
+
+// デジタル出力実行
+void setDigitalPin(int pin, int value) {
+  if (!isValidPin(pin)) return; // ホワイトリスト
+  if (value == 1) {
+    if (!checkInterlock(pin)) return; // 排他制御
+  }
+
+  // ピン出力実行
+  pinMode(pin, OUTPUT); // 念のためモード設定
+  digitalWrite(pin, value);
+  
+  // 使用済みリストに登録（緊急停止機能用）
+  bool found = false;
+  for(int i=0; i<digitalPinCount; i++) {
+    if(activeDigitalPins[i] == pin) {
+      found = true;
+    }
+  }
+  if(!found && digitalPinCount < MAX_DIGITAL_PINS) {
+    activeDigitalPins[digitalPinCount] = pin;
+    digitalPinCount++;
+  }
+  
+  Serial.print("Executed DO Pin:"); Serial.println(pin);
 }
 
 // コマンド解析
 void parseCommand(String cmd) {
   cmd.trim(); // 前後の空白を削除
+
+  if(cmd.startsWith("HB")) { // ハートビートはいったん無視
+    return;
+  }
   
   if (cmd.startsWith("DO,")) { 
     // DigitalOutput用コマンド (DO,ピン番号,0/1)
@@ -105,14 +183,10 @@ void parseCommand(String cmd) {
     int secondComma = cmd.indexOf(',', firstComma + 1);
     
     if (firstComma > 0 && secondComma > 0) {
-       int pin = cmd.substring(firstComma + 1, secondComma).toInt(); // ピン番号
-       int value = cmd.substring(secondComma + 1).toInt();           // 値 (0 or 1)
+      int pin = cmd.substring(firstComma + 1, secondComma).toInt(); // ピン番号
+      int value = cmd.substring(secondComma + 1).toInt();           // 値 (0 or 1)
        
-       pinMode(pin, OUTPUT); 
-       digitalWrite(pin, value);
-       
-       Serial.print("Executed DigitalOutput. Pin: "); Serial.print(pin);
-       Serial.print(", Val: "); Serial.println(value);
+      setDigitalPin(pin, value);
     } else { 
       Serial.println("Error: DO format (expected DO,pin,val)."); 
     }
@@ -129,24 +203,24 @@ void parseCommand(String cmd) {
       // 安全のためこちら側でも角度を0-180に制限
       angle = constrain(angle, 0, 180); 
       
-      // ピン番号に応じて正しいサーボを動かす
-      if (pin == SERVO_A_PIN) servoA.write(angle);
-      else if (pin == SERVO_B_PIN) servoB.write(angle);
-      else if (pin == SERVO_PURGE_PIN) servoPurge.write(angle);
-      else {
-        Serial.println("Error: Unknown servo pin.");
-        return; 
+      // ホワイトリスト確認
+      if (!isValidPin(pin)) return; 
+
+      // 配列からサーボを探して動かす
+      int idx = getServoIndex(pin);
+      if (idx != -1) {
+        servos[idx].write(angle);
+        Serial.print("Executed SV Pin:"); Serial.print(pin);
+        Serial.print(", Angle:"); Serial.println(angle);
+      } else {
+        Serial.println("Error: Servo limit reached.");
       }
-      
-      Serial.print("Executed Servo. Pin: "); Serial.print(pin);
-      Serial.print(", Angle: "); Serial.println(angle);
-      
+
     } else { 
       Serial.println("Error: SV format (expected SV,pin,angle)."); 
     }
     
   } else {
-    // どちらのヘッダーでもない場合
     if (cmd.length() > 0) {
         Serial.println("Error: Unknown command prefix.");
     }
