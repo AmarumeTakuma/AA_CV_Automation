@@ -53,7 +53,7 @@ all_widgets = []
 
 # --- 関数定義 ---
 
-"""settings.json から設定を読み込み、グローバル変数を更新する"""
+"""settings.json から設定を読み込む"""
 def load_settings(filename="settings.json"):
     global SERIAL_PORT, BAUDRATE
     global START_PIN, E_STOP_PIN
@@ -111,11 +111,8 @@ def load_settings(filename="settings.json"):
         messagebox.showerror("Configuration Error", f"Unexpected error during configuration loading:\n{e}")
         sys.exit(1)
 
+"""読み込んだ設定をもとに、排他チャンネルや逆引き辞書を生成する関数"""
 def generate_maps():
-    """
-    読み込んだ CELL_DEFINITIONS や SERVO_MAP をもとに、
-    ELECTRODE_MAP などの逆引き辞書や排他制御リストを再生成する関数
-    """
     global ELECTRODE_MAP, CELLS_AND_ELECTRODES
     global ELEC_EXCLUSIVE_CHANNELS, GAS_EXCLUSIVE_CHANNELS
     global REVERSE_ELEC_EXCLUSIVE_CHANNELS, REVERSE_GAS_EXCLUSIVE_CHANNELS
