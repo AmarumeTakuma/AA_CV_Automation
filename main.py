@@ -26,6 +26,8 @@ MAX_PIN_NUMBER = 0 # ピン番号の最大値（誤入力防止）
 PROHIBITED_PINS = [] # 使用禁止ピン（通信用 RX/TX）
 BUILTIN_LED_PIN = 0 # 警告対象ピン（起動時にLチカするピン）
 MIN_ANGLE_DIFF = 0 # サーボのON/OFF角度の最低差（不感帯対策）
+WATCHDOG_TIMEOUT = 0
+HEARTBEAT_INTERVAL = 0
 
 # 自動生成の辞書
 ELECTRODE_MAP = {} # 各電極とピンの対応（例: 'Cell A-WE': 2）
@@ -59,6 +61,7 @@ def load_settings(filename="settings.json"):
     global START_PIN, E_STOP_PIN
     global CELL_DEFINITIONS, SERVO_MAP
     global MAX_PIN_NUMBER, PROHIBITED_PINS, BUILTIN_LED_PIN, MIN_ANGLE_DIFF
+    global WATCHDOG_TIMEOUT, HEARTBEAT_INTERVAL
 
     # 実行ファイル（main.pyまたはexe）と同じ場所にあるJSONを探す
     if getattr(sys, 'frozen', False):
@@ -101,6 +104,9 @@ def load_settings(filename="settings.json"):
         PROHIBITED_PINS = safe_conf.get("prohibited_pins", [])
         BUILTIN_LED_PIN = safe_conf.get("builtin_led_pin", 13)
         MIN_ANGLE_DIFF = safe_conf.get("min_angle_diff", 5)
+
+        WATCHDOG_TIMEOUT = safe_conf.get("watchdog_timeout_ms", 3000)
+        HEARTBEAT_INTERVAL = max(100, int(WATCHDOG_TIMEOUT / 3)) # タイムアウトの 1/3 の間隔で送信（最低100msは確保）
         
         print(f"Loaded configuration file: {json_path}")
 
@@ -285,6 +291,7 @@ def connect_to_arduino():
         if not is_closing:
             status_label.config(text=f"Connected and Ready.")
             check_serial_input()
+            send_heartbeat()
 
     except serial.SerialException as e:
         if not is_closing: # 終了中はエラーを出さない
@@ -335,6 +342,16 @@ def send_command(command_to_send):
             status_label.config(text="Disconnected. Please restart the application.")
             disable_all_widgets_on_error()
         return False
+
+"""定期的にHBコマンドを送る"""
+def send_heartbeat():
+    global ser
+    if ser and ser.is_open:
+        try:
+            ser.write(b"HB\n") # ログを出さない
+            window.after(HEARTBEAT_INTERVAL, send_heartbeat) # 次回の予約
+        except Exception:
+            pass
 
 """ Arduinoからのシリアル入力を監視・表示する """
 def check_serial_input():

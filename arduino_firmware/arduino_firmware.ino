@@ -19,6 +19,10 @@ int servoOffAngles[MAX_SERVOS];
 const int DONE_PIN = 13;
 int lastDoneState = HIGH;
 
+// ウォッチドッグ用
+unsigned long lastHeartbeatTime = 0;
+bool watchdogActive = false;
+
 void setup() {
   // config.h に BAUDRATE が定義されていればそれを使い、なければ9600
   #ifdef BAUDRATE
@@ -77,6 +81,14 @@ void loop() {
     parseCommand(command);
   }
 
+  // ウォッチドッグ監視
+  if (watchdogActive) {
+    if (millis() - lastHeartbeatTime > WATCHDOG_TIMEOUT) {
+      forceStopAll(); // 緊急停止
+      watchdogActive = false; // 監視を一旦止める（次のHBが来るまで）
+    }
+  }
+
   // 測定終了信号の監視 (Active Low: HIGH -> LOW)
   int currentDoneState = digitalRead(DONE_PIN);
   if (lastDoneState == HIGH && currentDoneState == LOW) {
@@ -87,6 +99,31 @@ void loop() {
 }
 
 // 補助関数
+
+// 緊急停止：全てを初期状態に戻す
+void forceStopAll() {
+  // デジタルピンを全てOFF
+  for(int i=0; i<digitalPinCount; i++) {
+    int pin = activeDigitalPins[i];
+    if (pin != -1) {
+      digitalWrite(pin, LOW); // 強制OFF
+    }
+  }
+  // リストをリセット
+  digitalPinCount = 0;
+  for(int i=0; i<MAX_DIGITAL_PINS; i++) {
+    activeDigitalPins[i] = -1;
+  }
+  
+  // サーボを全て初期角度（OFF位置）に戻す
+  for(int i=0; i<MAX_SERVOS; i++) {
+    if (servoPins[i] != -1) {
+      servos[i].write(servoOffAngles[i]);
+    }
+  }
+  
+  Serial.println("Error: Watchdog Timeout! System Halted.");
+}
 
 // config.h に書かれた使っていいピンかどうかを確認
 bool isValidPin(int pin) {
@@ -173,7 +210,9 @@ void setDigitalPin(int pin, int value) {
 void parseCommand(String cmd) {
   cmd.trim(); // 前後の空白を削除
 
-  if(cmd.startsWith("HB")) { // ハートビートはいったん無視
+  if(cmd.startsWith("HB")) {
+    lastHeartbeatTime = millis(); // タイマーリセット
+    watchdogActive = true;        // 監視有効化（接続されたとみなす）
     return;
   }
   

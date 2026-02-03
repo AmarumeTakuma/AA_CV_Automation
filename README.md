@@ -10,6 +10,7 @@ AA_CV_Automation/
 ├── main.py                 # メイン制御アプリケーション (GUI: config読み込み、操作パネル)
 ├── settings.json           # システム全体の設定ファイル (ピン配置、セル構成、サーボ設定)
 ├── update_config.py        # Arduino用設定ヘッダ(config.h)生成スクリプト
+├── requirements.txt        # 必要なPythonライブラリ一覧
 ├── README.md               # 本ドキュメント
 └── arduino_firmware/       # Arduino用ファームウェアフォルダ
     ├── arduino_firmware.ino # Arduinoメインファームウェア
@@ -20,12 +21,19 @@ AA_CV_Automation/
 *   **OS**: Windows (推奨)
 *   **Python 3.x**
     *   `tkinter` (標準ライブラリ)
-    *   `pyserial` (`pip install pyserial`)
+    *   その他、`requirements.txt` に記載のライブラリ (`pyserial` 等)
 *   **Arduino IDE** (ファームウェア書き込み用)
 
 ## セットアップと使用方法
 
 本システムは、`settings.json` を編集するだけでPCアプリとArduinoファームウェアの両方の設定が同期される仕組みになっています。
+
+### Step 0: ライブラリのインストール
+ターミナルで以下のコマンドを実行し、必要なライブラリをインストールしてください。
+
+```bash
+pip install -r requirements.txt
+```
 
 ### Step 1: 構成の設定 (`settings.json`)
 `settings.json` を開き、実験環境に合わせてピン配置を変更してください。
@@ -33,7 +41,7 @@ AA_CV_Automation/
 *   **pins**: システム制御ピン (Start triggers, Emergency Stop)
 *   **cells**: 各セル（Cell A, Cell B...）と電極(WE, CE, RE)のArduinoピン番号
 *   **servos**: ガスライン制御用サーボモーターのピン番号と角度設定
-*   **safety**: 安全設定（最大ピン番号、禁止ピン、LEDピンなど）
+*   **safety**: 安全設定（最大ピン番号、禁止ピン、LEDピン、ウォッチドッグ設定など）
 
 ### Step 2: Arduino設定ファイルの生成 (`update_config.py`)
 `settings.json` の変更をArduino側に反映させるため、以下のスクリプトを実行します。
@@ -69,5 +77,8 @@ python main.py
 3.  **安全な信号出力 (Active Low Safety)**
     *   Start/EstopなどのActive Lowピンに対し、Arduino起動時の意図しないLow出力（誤トリガー）を防ぐため、`digitalWrite(HIGH)` してから `pinMode(OUTPUT)` に設定する安全な初期化順序を実装しています。
 
-4.  **設定の一元管理**
+4.  **ウォッチドッグタイマー (Watchdog Timer)**
+    *   PCアプリからのハートビート信号（通信）が途絶えた場合（アプリのクラッシュやUSBケーブル断線時など）、設定された時間（デフォルト3000ms）経過後に自動的に緊急停止（全ピンOFF、サーボ初期化）を発動します。
+
+5.  **設定の一元管理**
     *   すべてのハードウェア設定は `settings.json` に集約されており、PythonアプリとArduinoファームウェア間の設定不整合を防ぎます。
