@@ -41,7 +41,10 @@ pip install -r requirements.txt
 *   **pins**: システム制御ピン (Start triggers, Emergency Stop)
 *   **cells**: 各セル（Cell A, Cell B...）と電極(WE, CE, RE)のArduinoピン番号
 *   **servos**: ガスライン制御用サーボモーターのピン番号と角度設定
-*   **safety**: 安全設定（最大ピン番号、禁止ピン、LEDピン、ウォッチドッグ設定など）
+*   **safety**: 安全設定・禁止ピン設定
+    *   **prohibited_pins**: 以下の理由により、使用を禁止するピンを指定します。
+        *   `0`, `1`: Arduinoのシリアル通信(USB)で使用するため使用禁止
+        *   `13`: 緊急停止(Watchdog Timeout)時の警告LED表示に使用するため使用禁止
 
 ### Step 2: Arduino設定ファイルの生成 (`update_config.py`)
 `settings.json` の変更をArduino側に反映させるため、以下のスクリプトを実行します。

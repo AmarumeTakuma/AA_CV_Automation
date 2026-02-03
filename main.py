@@ -240,19 +240,13 @@ def validate_configuration():
     pin_usage[E_STOP_PIN] = "E-STOP Pin"
 
     for pin, user in pin_usage.items():
-        # 通信用ピン(0, 1)の使用禁止チェック
+        # 使用禁止ピンのチェック
         if pin in PROHIBITED_PINS:
-            return f"Safety Error: Pin {pin} is reserved for Serial Communication (RX/TX).\nUsed by '{user}'.\nPlease use Pin 2 or higher."
+            return f"Safety Error: Pin {pin} is a RESERVED PIN (Serial RX/TX or Built-in LED).\nUsed by '{user}'.\nPlease select a different available pin."
 
         # 型と範囲のチェック（整数 かつ 0以上70以下）
         if not (isinstance(pin, int) and 0 <= pin <= MAX_PIN_NUMBER):
             return f"Config Error: Pin '{pin}' used by '{user}' is invalid.\nPin must be an integer between 0 and {MAX_PIN_NUMBER}.\n(Check for typos or negative numbers)"
-        
-    # Pin 13の使用を警告（起動時にLEDが点滅するため、リレーや弁を繋ぐと暴走するリスクがある）
-    if BUILTIN_LED_PIN in pin_usage:
-        user = pin_usage[BUILTIN_LED_PIN]
-        warn_msg = f"Safety Warning: Pin {BUILTIN_LED_PIN} is used by '{user}'.\nPin 13 toggles during Arduino boot (builtin LED).\nThis may cause unexpected actuation on startup.\nRecommend using another pin."
-        messagebox.showwarning("Configuration Warning", warn_msg)
 
     # ボーレートの標準値チェック（警告）
     if BAUDRATE not in STANDARD_BAUDRATES:

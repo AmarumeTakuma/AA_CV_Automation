@@ -16,7 +16,7 @@ int servoCount = 0;
 int servoOffAngles[MAX_SERVOS];
 
 // 終了信号用（必要であれば使用）
-const int DONE_PIN = 13;
+const int DONE_PIN = 19; // A5 (13はLED用に予約)
 int lastDoneState = HIGH;
 
 // ウォッチドッグ用
@@ -30,6 +30,10 @@ void setup() {
   #else
     Serial.begin(9600);
   #endif
+
+  // オンボードLEDを出力に設定し、OFFにしておく
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   pinMode(DONE_PIN, INPUT_PULLUP);
 
@@ -70,6 +74,10 @@ void setup() {
       pinMode(PIN_ESTOP, OUTPUT);    // その後で出力モードへ
     }
   #endif
+
+  // オンボードLEDの初期化 (消灯)
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   Serial.println("Arduino Ready.");
 }
@@ -121,6 +129,10 @@ void forceStopAll() {
       servos[i].write(servoOffAngles[i]);
     }
   }
+
+  // 緊急停止したらLEDを点灯
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   
   Serial.println("Error: Watchdog Timeout! System Halted.");
 }
@@ -212,7 +224,8 @@ void parseCommand(String cmd) {
 
   if(cmd.startsWith("HB")) {
     lastHeartbeatTime = millis(); // タイマーリセット
-    watchdogActive = true;        // 監視有効化（接続されたとみなす）
+    watchdogActive = true; // 監視有効化（接続されたとみなす）
+    digitalWrite(LED_BUILTIN, LOW); // 正常に通信できているのでLEDを消す
     return;
   }
   
@@ -223,7 +236,7 @@ void parseCommand(String cmd) {
     
     if (firstComma > 0 && secondComma > 0) {
       int pin = cmd.substring(firstComma + 1, secondComma).toInt(); // ピン番号
-      int value = cmd.substring(secondComma + 1).toInt();           // 値 (0 or 1)
+      int value = cmd.substring(secondComma + 1).toInt(); // 値 (0 or 1)
        
       setDigitalPin(pin, value);
     } else { 
@@ -237,7 +250,7 @@ void parseCommand(String cmd) {
     
     if (firstComma > 0 && secondComma > 0) {
       int pin = cmd.substring(firstComma + 1, secondComma).toInt(); // ピン番号
-      int angle = cmd.substring(secondComma + 1).toInt();           // 角度
+      int angle = cmd.substring(secondComma + 1).toInt(); // 角度
       
       // 安全のためこちら側でも角度を0-180に制限
       angle = constrain(angle, 0, 180); 
