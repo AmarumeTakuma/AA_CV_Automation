@@ -43,7 +43,7 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     pins_conf = data.get("pins", {})
     cells = data.get("cells", {})
     servos = data.get("servos", {})
-    # safety = data.get("safety", {})
+    safety = data.get("safety", {})
 
     # 排他ペア
     exclusive_pairs = []
@@ -145,6 +145,12 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
         lines.append(f"const int VALID_PINS[] = {{ {pins_str} }};")
     else:
         lines.append("const int VALID_PINS[] = { -1 };")
+
+    # ウォッチドッグタイマー設定
+    wd_timeout = safety.get("watchdog_timeout_ms", 3000) # デフォルト3000ms
+    lines.append("")
+    lines.append("// --- Safety Settings ---")
+    lines.append(f"const long WATCHDOG_TIMEOUT = {wd_timeout};") # const longとして出力
 
     lines.append("")
     lines.append("#endif // CONFIG_H")
