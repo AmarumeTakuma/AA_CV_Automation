@@ -1,10 +1,6 @@
 #include <Servo.h>
 #include "config.h"
 
-// 定数定義 (とりあえずここにハードコードして動かす）
-const int MAX_SERVOS = 12; 
-const int MAX_DIGITAL_PINS = 60; 
-
 // デジタルピン管理（使ったピンを記録）
 int activeDigitalPins[MAX_DIGITAL_PINS];
 int digitalPinCount = 0;
@@ -16,7 +12,6 @@ int servoCount = 0;
 int servoOffAngles[MAX_SERVOS];
 
 // 終了信号用（必要であれば使用）
-const int DONE_PIN = 19; // A5 (13はLED用に予約)
 int lastDoneState = HIGH;
 
 // ウォッチドッグ用
@@ -24,7 +19,7 @@ unsigned long lastHeartbeatTime = 0;
 bool watchdogActive = false;
 
 void setup() {
-  // config.h に BAUDRATE が定義されていればそれを使い、なければ9600
+  // 通信設定（config.h に BAUDRATE が定義されていればそれを使い、なければ9600）
   #ifdef BAUDRATE
     Serial.begin(BAUDRATE);
   #else
@@ -35,7 +30,10 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
-  pinMode(DONE_PIN, INPUT_PULLUP);
+  // 測定終了ピン (入力) の初期化
+  if (DONE_PIN >= 0) {
+    pinMode(DONE_PIN, INPUT_PULLUP);
+  }
 
   // 管理配列の初期化
   for(int i=0; i<MAX_SERVOS; i++) {
@@ -47,37 +45,28 @@ void setup() {
   }
 
   // configからサーボのデフォルト角度を読み込む
-  #ifdef SERVO_COUNT_DEF
-    for(int i=0; i<SERVO_COUNT_DEF; i++) {
-      int pin = SERVO_DEFAULTS[i][0];
-      int angle = SERVO_DEFAULTS[i][1];
-      if(pin != -1) {
-         int idx = getServoIndex(pin); 
-         if(idx != -1) {
-             servoOffAngles[idx] = angle;
-             servos[idx].write(angle); // 起動時にすぐオフ角度に
-         }
-      }
+  for(int i=0; i<SERVO_COUNT_DEF; i++) {
+    int pin = SERVO_DEFAULTS[i][0];
+    int angle = SERVO_DEFAULTS[i][1];
+    if(pin != -1) {
+        int idx = getServoIndex(pin); 
+        if(idx != -1) {
+            servoOffAngles[idx] = angle;
+            servos[idx].write(angle); // 起動時にすぐオフ角度に
+        }
     }
-  #endif
+  }
 
-  // システム制御ピン（Start/Estop）の安全な初期化
-  #ifdef PIN_START
-    if (PIN_START != -1) {
-      digitalWrite(PIN_START, HIGH); // 先にOFF(HIGH)状態にする
-      pinMode(PIN_START, OUTPUT);    // その後で出力モードへ
-    }
-  #endif
-  #ifdef PIN_ESTOP
-    if (PIN_ESTOP != -1) {
-      digitalWrite(PIN_ESTOP, HIGH); // 先にOFF(HIGH)状態にする
-      pinMode(PIN_ESTOP, OUTPUT);    // その後で出力モードへ
-    }
-  #endif
+  // システム制御ピン（Start/Estop）の初期化
+  if (START_PIN >= 0) {
+    digitalWrite(START_PIN, HIGH); // 先にOFF(HIGH)状態にする
+    pinMode(START_PIN, OUTPUT);    // その後で出力モードへ
+  }
+  if (ESTOP_PIN >= 0) {
+    digitalWrite(ESTOP_PIN, HIGH); // 先にOFF(HIGH)状態にする
+    pinMode(ESTOP_PIN, OUTPUT);    // その後で出力モードへ
+  }
 
-  // オンボードLEDの初期化 (消灯)
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
 
   Serial.println("Arduino Ready.");
 }
@@ -139,7 +128,6 @@ void forceStopAll() {
 
 // config.h に書かれた使っていいピンかどうかを確認
 bool isValidPin(int pin) {
-  #ifdef VALID_PIN_COUNT
     for (int i=0; i<VALID_PIN_COUNT; i++) {
       if (VALID_PINS[i] == pin) return true;
     }
