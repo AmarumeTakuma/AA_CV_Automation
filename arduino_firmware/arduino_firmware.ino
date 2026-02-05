@@ -128,40 +128,35 @@ void forceStopAll() {
 
 // config.h に書かれた使っていいピンかどうかを確認
 bool isValidPin(int pin) {
-    for (int i=0; i<VALID_PIN_COUNT; i++) {
-      if (VALID_PINS[i] == pin) return true;
-    }
-    Serial.print("Error: Pin "); Serial.print(pin); Serial.println(" is NOT in whitelist.");
-    return false;
-  #else
-    return true; // configがない場合は全許可（デバッグ用）
-  #endif
+  for (int i=0; i<VALID_PIN_COUNT; i++) {
+    if (VALID_PINS[i] == pin) return true;
+  }
+  Serial.print("Error: Pin "); Serial.print(pin); Serial.println(" is NOT in whitelist.");
+  return false;
 }
 
 // 排他制御チェック
 bool checkInterlock(int targetPin) {
-  #ifdef PAIR_COUNT
-    for (int i=0; i<PAIR_COUNT; i++) {
-      int pinA = EXCLUSIVE_PAIRS[i][0];
-      int pinB = EXCLUSIVE_PAIRS[i][1];
-      if (pinA == -1) continue;
+  for (int i=0; i<PAIR_COUNT; i++) {
+    int pinA = EXCLUSIVE_PAIRS[i][0];
+    int pinB = EXCLUSIVE_PAIRS[i][1];
+    if (pinA == -1) continue;
 
-      // 自分がAで、相方のBが既にONならブロック
-      if (targetPin == pinA) {
-        if (digitalRead(pinB) == HIGH) {
-          Serial.print("BLOCK: Pin "); Serial.print(pinA); Serial.print(" vs ON-Pin "); Serial.println(pinB);
-          return false;
-        }
-      } 
-      // 自分がBで、相方のAが既にONならブロック
-      else if (targetPin == pinB) {
-        if (digitalRead(pinA) == HIGH) {
-          Serial.print("BLOCK: Pin "); Serial.print(pinB); Serial.print(" vs ON-Pin "); Serial.println(pinA);
-          return false;
-        }
+    // 自分がAで、相方のBが既にONならブロック
+    if (targetPin == pinA) {
+      if (digitalRead(pinB) == HIGH) {
+        Serial.print("BLOCK: Pin "); Serial.print(pinA); Serial.print(" vs ON-Pin "); Serial.println(pinB);
+        return false;
+      }
+    } 
+    // 自分がBで、相方のAが既にONならブロック
+    else if (targetPin == pinB) {
+      if (digitalRead(pinA) == HIGH) {
+        Serial.print("BLOCK: Pin "); Serial.print(pinB); Serial.print(" vs ON-Pin "); Serial.println(pinA);
+        return false;
       }
     }
-  #endif
+  }
   return true;
 }
 

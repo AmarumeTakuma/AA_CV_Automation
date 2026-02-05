@@ -14,20 +14,21 @@ SERIAL_PORT = ""
 BAUDRATE = 0
 
 # 各電極、各サーボ、HZ-ProとArduinoのピン番号の対応
-START_PIN = 0 # DI1
-E_STOP_PIN = 0 # CELL-OPEN-IN
+START_PIN = -1 # DI1
+E_STOP_PIN = -1 # CELL-OPEN-IN
+DONE_PIN = -1 # main.pyでは直接制御しないが、validation用に保持
+
 CELL_DEFINITIONS = {}
 SERVO_MAP = {}
 
 # 安全のための制約
 STANDARD_BAUDRATES = [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200] # ボーレートの標準値
 REQUIRED_ELECTRODES = {'WE', 'CE', 'RE'} # 電極構成
-MAX_PIN_NUMBER = 0 # ピン番号の最大値（誤入力防止）
+MAX_PIN_NUMBER = 70 # ピン番号の最大値（誤入力防止）
 PROHIBITED_PINS = [] # 使用禁止ピン（通信用 RX/TX）
-BUILTIN_LED_PIN = 0 # 警告対象ピン（起動時にLチカするピン）
-MIN_ANGLE_DIFF = 0 # サーボのON/OFF角度の最低差（不感帯対策）
-WATCHDOG_TIMEOUT = 0
-HEARTBEAT_INTERVAL = 0
+MIN_ANGLE_DIFF = 5 # サーボのON/OFF角度の最低差（不感帯対策）
+WATCHDOG_TIMEOUT = 3000 # ウォッチドッグ機能のタイムアウト時間
+HEARTBEAT_INTERVAL = 1000 # ハートビートの間隔
 
 # 自動生成の辞書
 ELECTRODE_MAP = {} # 各電極とピンの対応（例: 'Cell A-WE': 2）
@@ -58,10 +59,10 @@ all_widgets = []
 """settings.json から設定を読み込む"""
 def load_settings(filename="settings.json"):
     global SERIAL_PORT, BAUDRATE
-    global START_PIN, E_STOP_PIN
+    global START_PIN, E_STOP_PIN, DONE_PIN
     global CELL_DEFINITIONS, SERVO_MAP
-    global MAX_PIN_NUMBER, PROHIBITED_PINS, BUILTIN_LED_PIN, MIN_ANGLE_DIFF
-    global WATCHDOG_TIMEOUT, HEARTBEAT_INTERVAL
+    global PROHIBITED_PINS, MIN_ANGLE_DIFF, WATCHDOG_TIMEOUT, HEARTBEAT_INTERVAL
+    global MAX_PIN_NUMBER
 
     # 実行ファイル（main.pyまたはexe）と同じ場所にあるJSONを探す
     if getattr(sys, 'frozen', False):
@@ -80,16 +81,17 @@ def load_settings(filename="settings.json"):
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        # System Settings
-        sys_conf = data.get("system", {})
-        SERIAL_PORT = sys_conf.get("port", "") # なかった場合、予測できないのでとりあえず空文字にして後でエラー
-        BAUDRATE = sys_conf.get("baudrate", 9600) # なかった場合とりあえず一般的な値へ
+        # Connection
+        conn_conf = data.get("connection", {})
+        SERIAL_PORT = conn_conf.get("port", "") # なかった場合、予測できないのでとりあえず空文字にして後でエラー
+        BAUDRATE = conn_conf.get("baudrate", 9600) # なかった場合とりあえず一般的な値へ
 
         # Pin Assignments
         pins_conf = data.get("pins", {})
-        # なかった場合とりあえず0番ピンにして、動作しないように
-        START_PIN = pins_conf.get("start", 0)
-        E_STOP_PIN = pins_conf.get("estop", 0)
+        # なかった場合無効化(-1)
+        START_PIN = pins_conf.get("start", -1)
+        E_STOP_PIN = pins_conf.get("estop", -1)
+        DONE_PIN = pins_conf.get("done", -1)
 
         # Maps
         # JSON構造: "Cell A": {"WE": 2, "CE": 3...}, "Gas Line A": {"pin": 5, "on_angle": 90...}
@@ -100,13 +102,14 @@ def load_settings(filename="settings.json"):
         # Safety Settings
         safe_conf = data.get("safety", {})
         # なかった場合とりあえず一般的な値へ
-        MAX_PIN_NUMBER = safe_conf.get("max_pin", 70)
         PROHIBITED_PINS = safe_conf.get("prohibited_pins", [])
-        BUILTIN_LED_PIN = safe_conf.get("builtin_led_pin", 13)
         MIN_ANGLE_DIFF = safe_conf.get("min_angle_diff", 5)
-
         WATCHDOG_TIMEOUT = safe_conf.get("watchdog_timeout_ms", 3000)
         HEARTBEAT_INTERVAL = max(100, int(WATCHDOG_TIMEOUT / 3)) # タイムアウトの 1/3 の間隔で送信（最低100msは確保）
+
+        # System Limits
+        sys_limits = data.get("system_limits", {})
+        MAX_PIN_NUMBER = sys_limits.get("max_pin_number", 70)
         
         print(f"Loaded configuration file: {json_path}")
 
@@ -135,6 +138,7 @@ def generate_maps():
     for cell_name, pins in CELL_DEFINITIONS.items():
         elec_list = []
         for elec_type, pin in pins.items():
+            if pin < 0: continue # 無効なピンは除外
             # セルに属するように電極名を作成 (例: "Cell A-WE")
             elec_name = f"{cell_name}-{elec_type}"
 
@@ -153,6 +157,8 @@ def generate_maps():
 
     # サーボ関係（排他チャンネル）
     for name, props in SERVO_MAP.items():
+        if props.get('pin', -1) < 0: continue # 無効なピンは除外
+
         if 'group' in props:
             group_name = props['group']
             if group_name not in GAS_EXCLUSIVE_CHANNELS:
@@ -161,13 +167,13 @@ def generate_maps():
             GAS_EXCLUSIVE_CHANNELS[group_name].append(name)
 
     # 逆引き辞書
-    for elec_channel_name, elec_names in ELEC_EXCLUSIVE_CHANNELS.items():
+    for elec_ch_name, elec_names in ELEC_EXCLUSIVE_CHANNELS.items():
         for elec_name in elec_names:
-            REVERSE_ELEC_EXCLUSIVE_CHANNELS[elec_name] = elec_channel_name
+            REVERSE_ELEC_EXCLUSIVE_CHANNELS[elec_name] = elec_ch_name
 
-    for gas_channel_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
+    for gas_ch_name, gasline_names in GAS_EXCLUSIVE_CHANNELS.items():
         for gasline_name in gasline_names:
-            REVERSE_GAS_EXCLUSIVE_CHANNELS[gasline_name] = gas_channel_name
+            REVERSE_GAS_EXCLUSIVE_CHANNELS[gasline_name] = gas_ch_name
             
     print("Internal maps generated.")
 
@@ -191,11 +197,14 @@ def validate_configuration():
         if missing_electrodes:
             missing_str = ", ".join(missing_electrodes)
             warn_msg = f"Config Warning: '{cell_name}' is missing electrodes: [{missing_str}].\nStandard CV requires WE, CE, and RE.\n(Ignore this if using 2-electrode setup)"
-            messagebox.showwarning("Configuration Warning", warn_msg)
+            print(warn_msg)
+            # messagebox.showwarning("Configuration Warning", warn_msg)
 
     # サーボモータ設定のチェック
 
     for gasline_name, settings in SERVO_MAP.items():
+        if settings.get('pin', -1) < 0: continue # 無効なピンは除外
+
         # オンオフ角度が存在することをチェック
         if 'pin' not in settings or 'on_angle' not in settings or 'off_angle' not in settings:
             return f"Config Error: Gas line '{gasline_name}' in GAS_SERVO_MAP is missing essential settings."
@@ -220,24 +229,34 @@ def validate_configuration():
 
     # 重複チェック
     pin_usage = {} # 使用されているピン一覧（例: 2: 'Cell A-WE'）
+
+    def check_pin(pin, user_name):
+        if pin < 0: return None # -1はチェックしない
+        if pin in pin_usage:
+            return f"Config Error: Pin {pin} duplicated. Used by '{pin_usage[pin]}' and '{user_name}'."
+        pin_usage[pin] = user_name
+        
+        if pin in PROHIBITED_PINS:
+             return f"Safety Error: Pin {pin} is PROHIBITED."
+        if pin > MAX_PIN_NUMBER:
+             return f"Config Error: Pin {pin} exceeds MAX ({MAX_PIN_NUMBER})."
+        return None
+    
     # 電極のピンをチェック
     for name, pin in ELECTRODE_MAP.items():
-        if pin in pin_usage:
-            return f"Config Error: Pin {pin} is duplicated. Used by '{pin_usage[pin]}' and '{name}'."
-        pin_usage[pin] = name
+        err = check_pin(pin, name)
+        if err: return err
     # ガスラインのピンをチェック
     for name, settings in SERVO_MAP.items():
-        pin = settings['pin']
-        if pin in pin_usage:
-            return f"Config Error: Pin {pin} is duplicated. Used by '{pin_usage[pin]}' and '{name}'."
-        pin_usage[pin] = name
-    # HZ-Pro用のピンをチェック
-    if START_PIN in pin_usage:
-        return f"Config Error: Trigger Pin {START_PIN} is duplicated. Used by '{pin_usage[START_PIN]}'."
-    pin_usage[START_PIN] = "Start Pin"
-    if E_STOP_PIN in pin_usage:
-        return f"Config Error: E-STOP Pin {E_STOP_PIN} is duplicated. Used by '{pin_usage[E_STOP_PIN]}'."
-    pin_usage[E_STOP_PIN] = "E-STOP Pin"
+        err = check_pin(settings['pin'], name)
+        if err: return err
+    # システムピンをチェック
+    err = check_pin(START_PIN, "Start Pin")
+    if err: return err
+    err = check_pin(E_STOP_PIN, "E-Stop Pin")
+    if err: return err
+    err = check_pin(DONE_PIN, "Done Pin")
+    if err: return err
 
     for pin, user in pin_usage.items():
         # 使用禁止ピンのチェック
@@ -380,17 +399,20 @@ def initialize_all_devices():
     # 電極をすべて切断
     for elec_pin in ELECTRODE_MAP.values():
         if not send_command(f"DO,{elec_pin},0\n"): success = False # DigitalOutput用コマンドは DO,pin,0/1
-        time.sleep(0.05)
+        time.sleep(0.02)
     # サーボモータをすべてOFF角度へ
     for settings in SERVO_MAP.values():
         servo_pin = settings['pin']
+        if servo_pin < 0: continue # ピンが無効ならコマンドを送らない
         off_angle = settings['off_angle']
         if not send_command(f"SV,{servo_pin},{off_angle}\n"): success = False # サーボ用コマンドは SV,pin,angle
-        time.sleep(0.1)
+        time.sleep(0.05)
     # HZ-ProのDIをすべてHIGHへ（Active Lowにするので待機時はHIGH）
-    if not send_command(f"DO,{START_PIN},1\n"): success = False
+    if START_PIN >= 0:
+        if not send_command(f"DO,{START_PIN},1\n"): success = False
     time.sleep(0.05)
-    if not send_command(f"DO,{E_STOP_PIN},1\n"): success = False
+    if E_STOP_PIN >= 0:
+        if not send_command(f"DO,{E_STOP_PIN},1\n"): success = False
 
     # GUI更新（終了中は行わない）
     if not is_closing:
@@ -560,6 +582,11 @@ def start_measurement():
 
     if not (ser and ser.is_open) or is_closing: return
 
+    # START_PINが無効なら何もしない（メッセージを出す）
+    if START_PIN < 0:
+        messagebox.showinfo("Info", "Start Pin is disabled in settings.")
+        return
+
     # Active LowなのでLOWを送ってONにする
     send_command(f"DO,{START_PIN},0\n")
     # UI、測定開始ボタンをロック
@@ -580,8 +607,8 @@ def reset_to_ready_state():
     toggle_ui_lock(False)
     if start_button:
         start_button.config(state=tk.NORMAL, relief=tk.RAISED)
-    # 測定開始トリガーピンをHIGHに戻しておく
-    if ser and ser.is_open:
+    # 測定開始トリガーピンをHIGHに戻しておく（ピン有効時のみ実行）
+    if START_PIN >= 0 and ser and ser.is_open:
         send_command(f"DO,{START_PIN},1\n")
 
 """ 正常に測定が終了したときの処理（Arduinoからの信号でトリガー） """
@@ -600,6 +627,12 @@ def finish_measurement():
 """ エマストボタンが押されたときの処理 """
 def on_estop_click():
     if not (ser and ser.is_open) or is_closing: return
+    
+    # ピンが無効ならUIリセットだけ
+    if E_STOP_PIN < 0:
+        estop_var.set(0)
+        reset_to_ready_state()
+        return
     
     # ユーザーが押してONにしたときのみ動作
     if estop_var.get() == 1:
@@ -702,7 +735,9 @@ if __name__ == '__main__':
         gas_frame = tk.LabelFrame(right_container, text="Gas Control (Servo)", padx=10, pady=10)
         gas_frame.pack(fill=tk.X, anchor=tk.N, pady=(0, 10))
 
-        for gas_name in SERVO_MAP:
+        for gas_name, settings in SERVO_MAP.items():
+            if settings.get('pin', -1) < 0: continue # ピンが無効ならGUIに表示しない
+
             var = tk.IntVar(value=0)
             checkbox = tk.Checkbutton(gas_frame, text=gas_name, variable=var, command=lambda gn=gas_name: on_gas_check_click(gn))
             checkbox.pack(anchor=tk.W)
