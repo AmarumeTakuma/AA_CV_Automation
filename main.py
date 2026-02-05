@@ -22,8 +22,8 @@ CELL_DEFINITIONS = {}
 SERVO_MAP = {}
 
 # 安全のための制約
-STANDARD_BAUDRATES = [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200] # ボーレートの標準値
-REQUIRED_ELECTRODES = {'WE', 'CE', 'RE'} # 電極構成
+STANDARD_BAUDRATES = [] # ボーレートの標準値
+REQUIRED_ELECTRODES = set() # 電極構成
 MAX_PIN_NUMBER = 70 # ピン番号の最大値（誤入力防止）
 PROHIBITED_PINS = [] # 使用禁止ピン（通信用 RX/TX）
 MIN_ANGLE_DIFF = 5 # サーボのON/OFF角度の最低差（不感帯対策）
@@ -62,7 +62,8 @@ def load_settings(filename="settings.json"):
     global START_PIN, E_STOP_PIN, DONE_PIN
     global CELL_DEFINITIONS, SERVO_MAP
     global PROHIBITED_PINS, MIN_ANGLE_DIFF, WATCHDOG_TIMEOUT, HEARTBEAT_INTERVAL
-    global MAX_PIN_NUMBER
+    global REQUIRED_ELECTRODES
+    global MAX_PIN_NUMBER, STANDARD_BAUDRATES
 
     # 実行ファイル（main.pyまたはexe）と同じ場所にあるJSONを探す
     if getattr(sys, 'frozen', False):
@@ -107,9 +108,15 @@ def load_settings(filename="settings.json"):
         WATCHDOG_TIMEOUT = safe_conf.get("watchdog_timeout_ms", 3000)
         HEARTBEAT_INTERVAL = max(100, int(WATCHDOG_TIMEOUT / 3)) # タイムアウトの 1/3 の間隔で送信（最低100msは確保）
 
+        # 5. Validation Settings (ここを修正)
+        val_conf = data.get("validation", {})
+        req_list = val_conf.get("required_electrodes", ["WE", "CE", "RE"])
+        REQUIRED_ELECTRODES = set(req_list)
+
         # System Limits
         sys_limits = data.get("system_limits", {})
         MAX_PIN_NUMBER = sys_limits.get("max_pin_number", 70)
+        STANDARD_BAUDRATES = sys_limits.get("allowed_baudrates", [9600])
         
         print(f"Loaded configuration file: {json_path}")
 
@@ -187,18 +194,11 @@ def validate_configuration():
 
     for cell_name, pins in CELL_DEFINITIONS.items():
         defined_types = set(pins.keys())
-        missing_electrodes = REQUIRED_ELECTRODES - defined_types
+        # validation.required_electrodes と比較
+        missing = REQUIRED_ELECTRODES - defined_types
         
-        # WE（作用極）がない場合はエラー
-        if 'WE' in missing_electrodes:
-            return f"Config Error: '{cell_name}' is missing 'WE' (Working Electrode).\nEvery cell must have a WE."
-            
-        # CE（対極）やRE（参照極）がない場合は警告
-        if missing_electrodes:
-            missing_str = ", ".join(missing_electrodes)
-            warn_msg = f"Config Warning: '{cell_name}' is missing electrodes: [{missing_str}].\nStandard CV requires WE, CE, and RE.\n(Ignore this if using 2-electrode setup)"
-            print(warn_msg)
-            # messagebox.showwarning("Configuration Warning", warn_msg)
+        if missing:
+            return f"Config Error: '{cell_name}' is missing required electrodes: {list(missing)}.\nRequired per settings: {list(REQUIRED_ELECTRODES)}"
 
     # サーボモータ設定のチェック
 
@@ -248,7 +248,7 @@ def validate_configuration():
         if err: return err
     # ガスラインのピンをチェック
     for name, settings in SERVO_MAP.items():
-        err = check_pin(settings['pin'], name)
+        err = check_pin(settings.get('pin', -1), name)
         if err: return err
     # システムピンをチェック
     err = check_pin(START_PIN, "Start Pin")
