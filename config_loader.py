@@ -13,7 +13,7 @@ class ConfigManager:
         self.baudrate = 9600
 
         # Arduinoのピン番号の対応
-        self.start_pin = -1
+        self.di1_output_pin = -1
         self.estop_pin = -1
         self.done_pin = -1
         self.cell_definitions = {}
@@ -64,7 +64,7 @@ class ConfigManager:
 
             # Pin Assignments（なかった場合無効化（-1））
             pins = data.get("pins", {})
-            self.start_pin = pins.get("start", -1)
+            self.di1_output_pin = pins.get("di1_output", -1)
             self.estop_pin = pins.get("estop", -1)
             self.done_pin = pins.get("done", -1)
 
@@ -192,7 +192,7 @@ class ConfigManager:
         for name, settings in self.servo_map.items(): 
             if e := check_pin(settings.get('pin', -1), name): return e
         
-        if e := check_pin(self.start_pin, "Start Pin"): return e
+        if e := check_pin(self.di1_output_pin, "DI1 Output Pin"): return e
         if e := check_pin(self.estop_pin, "E-Stop Pin"): return e
         if e := check_pin(self.done_pin, "Done Pin"): return e
 
