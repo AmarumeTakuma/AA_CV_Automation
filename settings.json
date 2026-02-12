@@ -1,0 +1,44 @@
+{
+  "_comment": "=== USER CONFIGURATION (実験に合わせて編集してください) ===",
+
+  "connection": {
+    "port": "COM5",
+    "baudrate": 9600
+  },
+
+  "pins": {
+    "di1_output": 11,
+    "estop": 12,
+    "done": 19
+  },
+
+  "cells": {
+    "Cell A": {"WE": 2, "CE": 3, "RE": 4},
+    "Cell B": {"WE": 8, "CE": 9, "RE": 10}
+  },
+
+  "servos": {
+    "Gas Line A": {"pin": 5, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
+    "Gas Line B": {"pin": 6, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
+    "Gas Purge":  {"pin": 7, "on_angle": 90, "off_angle": 0}
+  },
+
+  "_separator": "=======================================================",
+  "_comment_2": "=== SYSTEM CONSTANTS (ここから下は変更しないでください) ===",
+
+  "safety": {
+    "watchdog_timeout_ms": 3000,
+    "min_angle_diff": 5,
+    "prohibited_pins": [0, 1, 13]
+  },
+
+  "validation": {
+    "required_electrodes": ["WE", "CE", "RE"]
+  },
+
+  "system_limits": {
+    "max_pin_number": 70,
+    "max_servos": 12,
+    "allowed_baudrates": [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200]
+  }
+}

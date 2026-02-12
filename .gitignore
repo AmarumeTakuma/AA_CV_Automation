@@ -205,3 +205,20 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# VS Codeの設定フォルダ
+.vscode/
+
+# Mac/Windowsのゴミファイル
+.DS_Store
+Thumbs.db
+
+# Arduino/C++のコンパイル生成物
+*.hex
+*.elf
+*.exe
+*.o
+*.obj
+
+# 自動生成されるファイル
+arduino_firmware/config.h
