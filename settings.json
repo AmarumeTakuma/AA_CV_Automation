@@ -7,7 +7,7 @@
   },
 
   "pins": {
-    "start": 11,
+    "di1_output": 11,
     "estop": 12,
     "done": 19
   },
