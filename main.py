@@ -14,7 +14,7 @@ SERIAL_PORT = ""
 BAUDRATE = 0
 
 # 各電極、各サーボ、HZ-ProとArduinoのピン番号の対応
-START_PIN = -1 # DI1
+DI1_OUTPUT_PIN = -1 # DI1
 E_STOP_PIN = -1 # CELL-OPEN-IN
 DONE_PIN = -1 # main.pyでは直接制御しないが、validation用に保持
 
@@ -42,16 +42,15 @@ REVERSE_GAS_EXCLUSIVE_CHANNELS = {} # ガスライン排他チャンネルの逆
 # --- グローバル変数 ---
 
 ser = None
-is_measuring = False # 測定中フラグ
 is_closing = False # アプリ終了中フラグ
 
 # GUIの状態管理
 elec_check_vars = {}
 master_elec_check_vars = {}
 gas_check_vars = {}
-start_button = None
+di1_output_button = None
 estop_var = None
-estop_widget = None
+estop_button = None
 all_widgets = []
 
 # --- 関数定義 ---
@@ -59,7 +58,7 @@ all_widgets = []
 """settings.json から設定を読み込む"""
 def load_settings(filename="settings.json"):
     global SERIAL_PORT, BAUDRATE
-    global START_PIN, E_STOP_PIN, DONE_PIN
+    global DI1_OUTPUT_PIN, E_STOP_PIN, DONE_PIN
     global CELL_DEFINITIONS, SERVO_MAP
     global PROHIBITED_PINS, MIN_ANGLE_DIFF, WATCHDOG_TIMEOUT, HEARTBEAT_INTERVAL
     global REQUIRED_ELECTRODES
@@ -90,7 +89,7 @@ def load_settings(filename="settings.json"):
         # Pin Assignments
         pins_conf = data.get("pins", {})
         # なかった場合無効化(-1)
-        START_PIN = pins_conf.get("start", -1)
+        DI1_OUTPUT_PIN = pins_conf.get("di1_output", -1)
         E_STOP_PIN = pins_conf.get("estop", -1)
         DONE_PIN = pins_conf.get("done", -1)
 
@@ -251,7 +250,7 @@ def validate_configuration():
         err = check_pin(settings.get('pin', -1), name)
         if err: return err
     # システムピンをチェック
-    err = check_pin(START_PIN, "Start Pin")
+    err = check_pin(DI1_OUTPUT_PIN, "DI1 Output Pin")
     if err: return err
     err = check_pin(E_STOP_PIN, "E-Stop Pin")
     if err: return err
@@ -408,8 +407,8 @@ def initialize_all_devices():
         if not send_command(f"SV,{servo_pin},{off_angle}\n"): success = False # サーボ用コマンドは SV,pin,angle
         time.sleep(0.05)
     # HZ-ProのDIをすべてHIGHへ（Active Lowにするので待機時はHIGH）
-    if START_PIN >= 0:
-        if not send_command(f"DO,{START_PIN},1\n"): success = False
+    if DI1_OUTPUT_PIN >= 0:
+        if not send_command(f"DO,{DI1_OUTPUT_PIN},1\n"): success = False
     time.sleep(0.05)
     if E_STOP_PIN >= 0:
         if not send_command(f"DO,{E_STOP_PIN},1\n"): success = False
@@ -423,11 +422,11 @@ def initialize_all_devices():
             for var in gas_check_vars.values(): var.set(0)
             if estop_var: estop_var.set(0)
 
-            # UIのロック解除、測定開始/エマストボタン状態リセット
+            # UIのロック解除、DI1出力/エマストボタン状態リセット
             toggle_ui_lock(False)
-            if start_button: start_button.config(state=tk.NORMAL, relief=tk.RAISED)
-            if estop_widget:
-                estop_widget.config(fg="black", font=("Arial", 9, "bold"))
+            if di1_output_button: di1_output_button.config(state=tk.NORMAL, relief=tk.RAISED)
+            if estop_button:
+                estop_button.config(fg="black", font=("Arial", 9, "bold"))
 
             if 'status_label' in globals() and status_label.winfo_exists():
                 status_label.config(text="Device initialization finished.")
@@ -438,12 +437,12 @@ def initialize_all_devices():
     print("Device initialization attempt finished.")
     return success
 
-""" 測定中UIをロックする処理 """
+""" UIをロックする処理 """
 def toggle_ui_lock(is_locked): # True：ロック、False：解除
     if is_closing: return
 
     # エマストのみ操作可能
-    allowed_widgets = [estop_widget]
+    allowed_widgets = [estop_button]
 
     for widget in all_widgets:
         if widget in allowed_widgets:
@@ -576,53 +575,35 @@ def on_gas_check_click(clicked_gasline_name, update_gui=True):
         action_text = "Opened" if new_state == 1 else "Closed"
         status_label.config(text=f"Gas line {clicked_gasline_name} {action_text}.")
 
-""" 測定開始ボタンが押されたときの処理 """
-def start_measurement():
-    global is_measuring
-
+""" DI1 Outputボタンが押されたときの処理 """
+def trigger_di1_output():
     if not (ser and ser.is_open) or is_closing: return
 
-    # START_PINが無効なら何もしない（メッセージを出す）
-    if START_PIN < 0:
-        messagebox.showinfo("Info", "Start Pin is disabled in settings.")
+    # DI1_OUTPUT_PINが無効なら何もしない（メッセージを出す）
+    if DI1_OUTPUT_PIN < 0:
+        messagebox.showinfo("Info", "DI1 Output Pin is disabled in settings.")
         return
-
-    # Active LowなのでLOWを送ってONにする
-    send_command(f"DO,{START_PIN},0\n")
-    # UI、測定開始ボタンをロック
-    toggle_ui_lock(True)
-    start_button.config(state=tk.DISABLED, relief=tk.SUNKEN)
-    status_label.config(text="Measurement STARTED. Waiting for manual stop (Press E-STOP).")
-
-    is_measuring = True
-
-""" 測定終了時リセット用共通処理（UIと測定開始ピンを待機状態に戻す） """
-def reset_to_ready_state():
-    global is_measuring
-
-    if is_closing: return
-
-    is_measuring = False
     
-    toggle_ui_lock(False)
-    if start_button:
-        start_button.config(state=tk.NORMAL, relief=tk.RAISED)
-    # 測定開始トリガーピンをHIGHに戻しておく（ピン有効時のみ実行）
-    if START_PIN >= 0 and ser and ser.is_open:
-        send_command(f"DO,{START_PIN},1\n")
+    toggle_ui_lock(True)
+
+    # Active Lowでパルス出力 (0.5秒間 LOW)
+    try:
+        send_command(f"DO,{DI1_OUTPUT_PIN},0\n")
+        status_label.config(text="DI1 Output Triggered (Pulse).")
+        window.update() # GUIを強制更新して表示を反映
+        time.sleep(0.5)   
+        send_command(f"DO,{DI1_OUTPUT_PIN},1\n")
+
+    finally:
+        toggle_ui_lock(False)
 
 """ 正常に測定が終了したときの処理（Arduinoからの信号でトリガー） """
 def finish_measurement():
     if is_closing: return
 
-    if not is_measuring:
-        print("Ignored 'MEASUREMENT_END' signal (Not in measuring state).")
-        return
-    
-    reset_to_ready_state() # 共通処理
-
-    status_label.config(text="Measurement COMPLETED. Ready for next run.")
+    # 測定終了信号を受信した際のログ表示のみ行う
     print("Measurement finished signal received.")
+    status_label.config(text="Signal: MEASUREMENT_END received.")
 
 """ エマストボタンが押されたときの処理 """
 def on_estop_click():
@@ -631,24 +612,21 @@ def on_estop_click():
     # ピンが無効ならUIリセットだけ
     if E_STOP_PIN < 0:
         estop_var.set(0)
-        reset_to_ready_state()
         return
     
     # ユーザーが押してONにしたときのみ動作
     if estop_var.get() == 1:
         # Active Lowでパルス送信
         send_command(f"DO,{E_STOP_PIN},0\n")
-        estop_widget.config(fg="white", font=("Arial", 9, "bold"))
+        estop_button.config(fg="white", font=("Arial", 9, "bold"))
         status_label.config(text="Measurement ABORTED via E-STOP. Device Reset.")
         window.update() # GUIを強制更新して表示を反映
         time.sleep(0.5)
         send_command(f"DO,{E_STOP_PIN},1\n") 
         
-        reset_to_ready_state() # 共通処理
-        
         # 固有のUIリセット
         estop_var.set(0)
-        estop_widget.config(fg="black", font=("Arial", 9, "bold"))
+        estop_button.config(fg="black", font=("Arial", 9, "bold"))
         status_label.config(text="E-STOP Released. Ready for next measurement.")
     else:
         # 万が一OFF操作された場合も安全のためHIGHを送っておく
@@ -659,7 +637,7 @@ def disable_all_widgets_on_error():
     if is_closing: return
     for widget in all_widgets:
         widget.config(state=tk.DISABLED)
-    if start_button: start_button.config(state=tk.DISABLED)
+    if di1_output_button: di1_output_button.config(state=tk.DISABLED)
 
 """ 正常にプログラムを終了する """
 def on_closing():
@@ -748,18 +726,20 @@ if __name__ == '__main__':
         measurement_frame = tk.LabelFrame(right_container, text="HZ-Pro Control (Active Low)", padx=10, pady=10)
         measurement_frame.pack(fill=tk.X, anchor=tk.N, pady=(0, 10))
 
-        # 測定開始ボタン
-        start_button = tk.Button(measurement_frame, text="Start Measurement", bg="#ccffcc", 
-                                 width=20, height=2, command=start_measurement)
-        start_button.pack(pady=5)
+        # DI1 Output ボタン
+        di1_output_button = tk.Button(measurement_frame, text="Trigger DI1 Output", bg="#ccffcc", 
+                                 width=20, height=2, command=trigger_di1_output)
+        di1_output_button.pack(pady=5)
+        all_widgets.append(di1_output_button)
 
         # E-STOP ボタン
         estop_var = tk.IntVar(value=0)
-        estop_widget = tk.Checkbutton(measurement_frame, text="E-STOP [Esc]", bg="#ffcccc", variable=estop_var, 
+        estop_button = tk.Checkbutton(measurement_frame, text="E-STOP [Esc]", bg="#ffcccc", variable=estop_var, 
                              indicatoron=0, selectcolor="red", 
                              width=20, height=2, fg="black", font=("Arial", 9, "bold"),
                              command=on_estop_click)
-        estop_widget.pack(pady=2)
+        estop_button.pack(pady=2)
+        all_widgets.append(estop_button)
 
         # リセット関係
         bottom_frame = tk.Frame(window)
