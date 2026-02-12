@@ -43,7 +43,7 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     baudrate = conn_conf.get("baudrate", 9600)  # ボーレート (main.pyと同じデフォルト値 9600 を採用)
 
     pins_conf = data.get("pins", {})
-    pin_start = pins_conf.get("start", -1)
+    pin_di1_output = pins_conf.get("di1_output", -1)
     pin_estop = pins_conf.get("estop", -1)
     pin_done = pins_conf.get("done", -1)
     
@@ -90,8 +90,8 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     # サーボ
     for pin, _ in servo_defaults:
         valid_pins.add(pin)
-    # システム出力ピン (Start/Estopのみ許可。Doneは入力なので許可しない)
-    if pin_start >= 0: valid_pins.add(pin_start)
+    # システム出力ピン (DI1 Output/Estopのみ許可。Doneは入力なので許可しない)
+    if pin_di1_output >= 0: valid_pins.add(pin_di1_output)
     if pin_estop >= 0: valid_pins.add(pin_estop)
 
     valid_pin_list = sorted(list(valid_pins))
@@ -113,13 +113,13 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
 
     # Arduinoの仕様による制限
     lines.append("// --- Firmware Limits (Memory Allocation) ---")
-    lines.append(f"const int MAX_SERVOS = {max_servos};")
+    lines.append(f"const int MAX_SERVO_COUNT = {max_servos};")
     lines.append(f"const int MAX_DIGITAL_PINS = {max_pins};")
     lines.append("")
 
     # システムピン
     lines.append("// --- Control Pins (Hardware Assignment) ---")
-    lines.append(f"const int START_PIN = {pin_start};")
+    lines.append(f"const int DI1_OUTPUT_PIN = {pin_di1_output};")
     lines.append(f"const int ESTOP_PIN = {pin_estop};")
     lines.append(f"const int DONE_PIN = {pin_done};")
     lines.append("")

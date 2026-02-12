@@ -6,10 +6,10 @@ int activeDigitalPins[MAX_DIGITAL_PINS];
 int digitalPinCount = 0;
 
 // サーボ管理
-Servo servos[MAX_SERVOS];
-int servoPins[MAX_SERVOS];
+Servo servos[MAX_SERVO_COUNT];
+int servoPins[MAX_SERVO_COUNT];
 int servoCount = 0;
-int servoOffAngles[MAX_SERVOS];
+int servoOffAngles[MAX_SERVO_COUNT];
 
 // 終了信号用（必要であれば使用）
 int lastDoneState = HIGH;
@@ -36,7 +36,7 @@ void setup() {
   }
 
   // 管理配列の初期化
-  for(int i=0; i<MAX_SERVOS; i++) {
+  for(int i=0; i<MAX_SERVO_COUNT; i++) {
     servoPins[i] = -1;
     servoOffAngles[i] = 0;
   }
@@ -57,10 +57,10 @@ void setup() {
     }
   }
 
-  // システム制御ピン（Start/Estop）の初期化
-  if (START_PIN >= 0) {
-    digitalWrite(START_PIN, HIGH); // 先にOFF(HIGH)状態にする
-    pinMode(START_PIN, OUTPUT);    // その後で出力モードへ
+  // システム制御ピン（DI1 Output/Estop）の初期化
+  if (DI1_OUTPUT_PIN >= 0) {
+    digitalWrite(DI1_OUTPUT_PIN, HIGH); // 先にOFF(HIGH)状態にする
+    pinMode(DI1_OUTPUT_PIN, OUTPUT);    // その後で出力モードへ
   }
   if (ESTOP_PIN >= 0) {
     digitalWrite(ESTOP_PIN, HIGH); // 先にOFF(HIGH)状態にする
@@ -113,7 +113,7 @@ void forceStopAll() {
   }
   
   // サーボを全て初期角度（OFF位置）に戻す
-  for(int i=0; i<MAX_SERVOS; i++) {
+  for(int i=0; i<MAX_SERVO_COUNT; i++) {
     if (servoPins[i] != -1) {
       servos[i].write(servoOffAngles[i]);
     }
@@ -166,7 +166,7 @@ int getServoIndex(int pin) {
     if (servoPins[i] == pin) return i;
   }
   // 未登録なら空き枠を探す
-  if (servoCount < MAX_SERVOS) {
+  if (servoCount < MAX_SERVO_COUNT) {
     servos[servoCount].attach(pin); // ここで初めてattach
     servoPins[servoCount] = pin;
     servoCount++;
