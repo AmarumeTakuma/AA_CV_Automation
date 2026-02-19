@@ -5,7 +5,7 @@ import sys
 
 # 自作モジュール
 from config_manager import ConfigManager
-from device_controller import ArduinoDevice
+from device_controller import ArduinoDevice, DeviceCommunicationError
 
 # ==========================================
 # グローバル変数
@@ -53,29 +53,31 @@ def connect_app():
             return
 
     # 実際の接続処理（ポートが存在した、またはYesが押された場合）
-    if device.connect():
-        status_label.config(text=f"Connected to {config.serial_port}. Initializing...")
-        root.update()
-        
-        if is_closing: return
-
-        if device.initialize_devices():
-            print("Initialization successful. Connected and Ready.")
-            status_label.config(text="Connected and Ready.")
-            reset_ui_state()
-            # 定期タスク開始
-            check_incoming_data()
-            send_heartbeat_loop()
-        else:
-            print("Initialization Error: Device initialization failed.")
-            if not is_closing:
-                messagebox.showerror("Error", "Initialization failed.")
-                root.destroy()
-    # 接続に失敗した場合のエラー
-    else:
-        print(f"Connection Error: Could not connect to {config.serial_port}.")
+    try:
+        device.connect()
+    except DeviceCommunicationError as e:
+        print(f"Connection Error: {e}")
         if not is_closing:
-            messagebox.showerror("Connection Error", f"Could not open {config.serial_port}.\nDevice may be in use or disconnected.")
+            messagebox.showerror("Connection Error", str(e))
+            root.destroy()
+        return
+
+    status_label.config(text=f"Connected to {config.serial_port}. Initializing...")
+    root.update()
+    
+    if is_closing: return
+
+    if device.initialize_devices():
+        print("Initialization successful. Connected and Ready.")
+        status_label.config(text="Connected and Ready.")
+        reset_ui_state()
+        # 定期タスク開始
+        check_incoming_data()
+        send_heartbeat_loop()
+    else:
+        print("Initialization Error: Device initialization failed.")
+        if not is_closing:
+            messagebox.showerror("Error", "Initialization failed.")
             root.destroy()
 
 def send_heartbeat_loop():

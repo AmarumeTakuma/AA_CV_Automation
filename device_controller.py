@@ -2,6 +2,14 @@ import serial
 import serial.tools.list_ports
 import time
 
+class DeviceCommunicationError(Exception):
+    """通信エラー（切断、ポートオープン失敗など）"""
+    pass
+
+class DeviceTimeoutError(Exception):
+    """コマンド応答なし（タイムアウト）"""
+    pass
+
 class ArduinoDevice:
     def __init__(self, config):
         self.config = config  # ConfigManagerのインスタンスを受け取る
@@ -29,8 +37,9 @@ class ArduinoDevice:
             self.is_connected = True
             return True
         except serial.SerialException as e:
-            print(f"Connection Error: {e}")
-            return False
+            msg = f"Could not open {self.config.serial_port}: {e}"
+            print(f"Connection Error: {msg}")
+            raise DeviceCommunicationError(msg)
 
     def close(self):
         """ 通信を安全に閉じる """
@@ -42,11 +51,14 @@ class ArduinoDevice:
     def send_command(self, command):
         """ コマンドを送信し、'executed' の応答(Ack)を待つ """
         if not (self.ser and self.ser.is_open):
-            print(f"Communication Error: Command '{command.strip()}' skipped (Not Connected)")
-            return False
+            msg = f"Command '{command.strip()}' failed: Device not connected."
+            print(f"Communication Error: {msg}")
+            raise DeviceCommunicationError(msg)
         
         try:        
             self.ser.reset_input_buffer()
+
+            # コマンド送信
             self.ser.write(command.encode())
             print(f"Sent: {command.strip()}")
 
@@ -55,20 +67,22 @@ class ArduinoDevice:
             while (time.time() - start_time) < 1.0:
                 if self.ser.in_waiting > 0:
                     line = self.ser.readline().decode('utf-8', errors='replace').strip()
-                    if line:
-                        # 応答があったらログに出す
-                        print(f"Ack: {line}") 
+                    if line: # 応答があったらログに出す
+                        print(f"Ack: {line}")
                     
                     if "executed" in line.lower():
                         return True
                 time.sleep(0.01)
 
-            print(f"Parameters Error: Timeout - No response for '{command.strip()}'")
-            return False
+            # タイムアウト
+            msg = f"No response for '{command.strip()}'."
+            print(f"Timeout Error: {msg}")
+            raise DeviceTimeoutError(msg)
         
         except Exception as e:
-            print(f"Communication Error: {e}")
-            return False
+            msg = f"Serial error on '{command.strip()}': {e}"
+            print(f"Communication Error: {msg}")
+            raise DeviceCommunicationError(msg)
 
     def send_heartbeat(self):
         """ ウォッチドッグタイマー用のハートビート送信 """
@@ -132,11 +146,11 @@ class ArduinoDevice:
         pin = self.config.di1_output_pin
         if pin < 0: return False
         
-        if self.send_command(f"DO,{pin},0\n"): # LOW (ON)
-            time.sleep(pulse_duration)
-            self.send_command(f"DO,{pin},1\n") # HIGH (OFF)
-            return True
-        return False
+        # 例外はそのまま呼び出し元へ伝播させる
+        self.send_command(f"DO,{pin},0\n") # LOW (ON)
+        time.sleep(pulse_duration)
+        self.send_command(f"DO,{pin},1\n") # HIGH (OFF)
+        return True
 
     def set_estop(self, is_active):
         """ E-Stopの状態を設定する (True=停止/LOW, False=解除/HIGH) """
