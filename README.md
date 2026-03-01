@@ -8,23 +8,33 @@ PC上のPythonアプリ(`main.py`)からArduinoを経由して、リレー（電
 ```
 AA_CV_Automation/
 ├── main.py                 # メイン制御アプリケーション (GUI: config読み込み、操作パネル)
+├── pyproject.toml          # uv / Python プロジェクト設定と依存関係定義
+├── uv.lock                 # uv が生成するロックファイル（依存バージョン固定）
 ├── settings.json           # システム全体の設定ファイル (ピン配置、セル構成、サーボ設定)
 ├── update_config.py        # Arduino用設定ヘッダ(config.h)生成スクリプト
-├── requirements.txt        # 必要なPythonライブラリ一覧
+├── requirements.txt        # 依存関係リスト（互換用）
 ├── README.md               # 本ドキュメント
 └── arduino_firmware/       # Arduino用ファームウェアフォルダ
     ├── arduino_firmware.ino # Arduinoメインファームウェア
-    └── config.h            # update_config.pyによって自動生成される設定ヘッダ
+    └── config.h            # update_config.pyによって自動生成される設定ヘッダ（生成後）
 ```
+
+## 前提条件
+
+本ドキュメント記載のセットアップを進める前に、以下がインストール済みであることを確認してください。
+
+*   **Python 3.12+**（`uv` 環境を利用した開発用途が前提です）
+*   **Arduino IDE**（ファームウェア書き込み用）
+*   **Git**（リポジトリ管理用）
 
 ## 動作環境
 *   **OS**: Windows (推奨)
-*   **Python 3.x**
+*   **Python 3.12+**
     *   `tkinter` (標準ライブラリ)
     *   その他、`requirements.txt` に記載のライブラリ (`pyserial` 等)
 *   **Arduino IDE** (ファームウェア書き込み用)
 
-## セットアップと使用方法
+## セットアップと使用方法（uv推奨）
 
 本システムは、`settings.json` を編集するだけでPCアプリとArduinoファームウェアの両方の設定が同期される仕組みになっています。
 
@@ -40,8 +50,22 @@ AA_CV_Automation/
 *   **ノイズ対策 (Noise Reduction)**
     *   サーボやリレーの制御線と、電気化学測定用のケーブル（特にWE/RE）は、束ねたり平行に這わせたりせず、できるだけ物理的に離して配線してください。
 
-### Step 0: ライブラリのインストール
+### Step 0: ライブラリのインストール（uv推奨）
 ターミナルで以下のコマンドを実行し、必要なライブラリをインストールしてください。
+
+`uv` 環境を利用する場合:
+
+```bash
+uv sync
+```
+
+`requirements.txt` から依存関係を `pyproject.toml` に取り込みたい場合（初回移行・更新時のみ）:
+
+```bash
+uv add -r requirements.txt
+```
+
+`pip` を使う場合（代替）:
 
 ```bash
 pip install -r requirements.txt
@@ -74,12 +98,21 @@ pip install -r requirements.txt
 > | A4 | 18 |
 > | A5 | 19 |
 
-### Step 2: Arduino設定ファイルの生成 (`update_config.py`)
+### Step 2: Arduino設定ファイルの生成（uv推奨） (`update_config.py`)
 `settings.json` の変更をArduino側に反映させるため、以下のスクリプトを実行します。
+
+`uv` 環境を利用する場合:
+
+```bash
+uv run python update_config.py
+```
+
+`pip` / 通常の Python 実行の場合（代替）:
 
 ```bash
 python update_config.py
 ```
+
 これにより `arduino_firmware/config.h` が自動生成されます。
 > **注意**: `arduino_firmware/config.h` は手動で編集しないでください。常に `update_config.py` 経由で更新します。
 
@@ -88,8 +121,16 @@ Arduino IDEを使用し、書き込みを行います。
 1.  `arduino_firmware/arduino_firmware.ino` を開きます。
 2.  ボードに書き込みます。この際、自動生成された `config.h` が読み込まれ、許可されたピンのみが操作可能になります（ホワイトリスト方式）。
 
-### Step 4: アプリケーションの起動
+### Step 4: アプリケーションの起動（uv推奨）
 PCとArduinoをUSB接続し、アプリを起動します。
+
+`uv` 環境を利用する場合:
+
+```bash
+uv run python main.py
+```
+
+`pip` / 通常の Python 実行の場合（代替）:
 
 ```bash
 python main.py
