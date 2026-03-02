@@ -44,7 +44,11 @@ class ArduinoDevice:
     def close(self):
         """ 通信を安全に閉じる """
         if self.ser and self.ser.is_open:
-            self.initialize_devices()  # 安全のため、ポートを閉じる前に全ピンを初期化
+            try:
+                self.initialize_devices()  # 安全のため、ポートを閉じる前に全ピンを初期化
+            except Exception as e:
+                # 終了時の初期化エラーは無視して、ポート自体は確実に閉じる
+                print(f"Warning: Device initialization during close failed: {e}")
             self.ser.close()
         self.is_connected = False
 
@@ -64,7 +68,8 @@ class ArduinoDevice:
 
             # 簡易ハンドシェイク（タイムアウト1.0秒）
             start_time = time.time()
-            while (time.time() - start_time) < 1.0:
+            timeout = 1.0
+            while (time.time() - start_time) < timeout:
                 if self.ser.in_waiting > 0:
                     line = self.ser.readline().decode('utf-8', errors='replace').strip()
                     if line: # 応答があったらログに出す
@@ -73,16 +78,18 @@ class ArduinoDevice:
                     if "executed" in line.lower():
                         return True
                 time.sleep(0.01)
-
-            # タイムアウト
-            msg = f"No response for '{command.strip()}'."
-            print(f"Timeout Error: {msg}")
-            raise DeviceTimeoutError(msg)
         
-        except Exception as e:
+        except (DeviceTimeoutError, DeviceCommunicationError): # 自前の例外はそのまま再送出
+            raise
+        except Exception as e: # その他のシリアル通信エラー
             msg = f"Serial error on '{command.strip()}': {e}"
             print(f"Communication Error: {msg}")
             raise DeviceCommunicationError(msg)
+        
+        # ここに到達 = タイムアウト
+        msg = f"No response for '{command.strip()}'."
+        print(f"Timeout Error: {msg}")
+        raise DeviceTimeoutError(msg)
 
     def send_heartbeat(self):
         """ ウォッチドッグタイマー用のハートビート送信 """
@@ -108,28 +115,50 @@ class ArduinoDevice:
         if not self.is_connected: return False
 
         print("Initializing devices... (Resetting all IO/Servo)")
+        success = True
 
         # 1. 電極をすべてOFF (0)
         for pin in self.config.electrode_map.values():
-            self.send_command(f"DO,{pin},0\n")
-            time.sleep(0.02)
+            try:
+                self.send_command(f"DO,{pin},0\n")
+                time.sleep(0.02)
+            except (DeviceCommunicationError, DeviceTimeoutError) as e:
+                print(f"Warning: Failed to initialize electrode pin {pin}: {e}")
+                success = False
         
         # 2. サーボをすべてOFF角度へ
         for s in self.config.servo_map.values():
             if s.get('pin', -1) >= 0:
-                self.send_command(f"SV,{s['pin']},{s['off_angle']}\n")
-                time.sleep(0.05)
+                try:
+                    self.send_command(f"SV,{s['pin']},{s['off_angle']}\n")
+                    time.sleep(0.05)
+                except (DeviceCommunicationError, DeviceTimeoutError) as e:
+                    print(f"Warning: Failed to initialize servo pin {s['pin']}: {e}")
+                    success = False
         
         # 3. システムピン初期化 (DI1 と E-Stop は Active Low なので待機時は 1(HIGH))
         if self.config.di1_output_pin >= 0:
-            self.send_command(f"DO,{self.config.di1_output_pin},1\n")
+            try:
+                self.send_command(f"DO,{self.config.di1_output_pin},1\n")
+            except (DeviceCommunicationError, DeviceTimeoutError) as e:
+                print(f"Warning: Failed to initialize DI1 pin: {e}")
+                success = False
+        
         time.sleep(0.05)
         
         if self.config.estop_pin >= 0:
-            self.send_command(f"DO,{self.config.estop_pin},1\n")
+            try:
+                self.send_command(f"DO,{self.config.estop_pin},1\n")
+            except (DeviceCommunicationError, DeviceTimeoutError) as e:
+                print(f"Warning: Failed to initialize E-STOP pin: {e}")
+                success = False
 
-        print("All physical devices initialized.")
-        return True
+        if success:
+            print("All physical devices initialized successfully.")
+        else:
+            print("Warning: Device initialization completed with some failures.")
+        
+        return success
 
     def set_digital(self, pin, value):
         """ 汎用デジタル出力 (main.pyから電極などを個別に操作する用) """
