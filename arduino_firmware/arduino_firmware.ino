@@ -97,33 +97,14 @@ void loop() {
 
 // 補助関数
 
-// ピンごとの安全停止レベルを返す
-// Active Low 系 (DI1/ESTOP) は HIGH が非発動、それ以外は LOW を安全側とする
-int getSafeOffLevel(int pin) {
-  if (pin == DI1_OUTPUT_PIN || pin == ESTOP_PIN) {
-    return HIGH;
-  }
-  return LOW;
-}
-
 // 緊急停止：全てを初期状態に戻す
 void forceStopAll() {
-  // デジタルピンを全て安全側へ
+  // デジタルピンを全てOFF
   for(int i=0; i<digitalPinCount; i++) {
     int pin = activeDigitalPins[i];
     if (pin != -1) {
-      digitalWrite(pin, getSafeOffLevel(pin));
+      digitalWrite(pin, LOW); // 強制OFF
     }
-  }
-
-  // Active Low のシステムピンは未登録でも明示的にOFF(HIGH)へ戻す
-  if (DI1_OUTPUT_PIN >= 0) {
-    pinMode(DI1_OUTPUT_PIN, OUTPUT);
-    digitalWrite(DI1_OUTPUT_PIN, HIGH);
-  }
-  if (ESTOP_PIN >= 0) {
-    pinMode(ESTOP_PIN, OUTPUT);
-    digitalWrite(ESTOP_PIN, HIGH);
   }
   // リストをリセット
   digitalPinCount = 0;
