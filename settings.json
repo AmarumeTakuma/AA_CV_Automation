@@ -2,7 +2,7 @@
   "_comment": "=== USER CONFIGURATION (実験に合わせて編集してください) ===",
 
   "connection": {
-    "port": "COM5",
+    "port": "COM3",
     "baudrate": 9600
   },
 
