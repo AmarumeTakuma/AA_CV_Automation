@@ -181,6 +181,37 @@ class ArduinoDevice:
         self.send_command(f"DO,{pin},1\n") # HIGH (OFF)
         return True
 
+    def start_measurement(self, pulse_duration=0.5):
+        """ 測定開始トリガーを送る (DI1 Active Low パルス) """
+        return self.trigger_di1(pulse_duration)
+
+    def stop_measurement(self):
+        """ 測定終了時に開始トリガーピンを待機状態(HIGH)へ戻す """
+        pin = self.config.di1_output_pin
+        if pin < 0:
+            return False
+        return self.send_command(f"DO,{pin},1\n")
+
+    def trigger_estop(self, pulse_duration=0.5):
+        """ 緊急停止トリガーを送る (E-STOP Active Low パルス) """
+        pin = self.config.estop_pin
+        if pin < 0: return False
+
+        self.send_command(f"DO,{pin},0\n")
+        time.sleep(pulse_duration)
+        self.send_command(f"DO,{pin},1\n")
+        return True
+
+    def probe_communication(self):
+        """ 通信健全性確認用の軽量プローブ（安全状態を維持するコマンド）"""
+        # Active Lowピンは待機時HIGHが安全状態のため、HIGH再送でリンク確認する
+        if self.config.estop_pin >= 0:
+            return self.send_command(f"DO,{self.config.estop_pin},1\n")
+        if self.config.di1_output_pin >= 0:
+            return self.send_command(f"DO,{self.config.di1_output_pin},1\n")
+        # プローブ対象ピンが無い場合は通信層としてはチェック不能なので成功扱い
+        return True
+
     def set_estop(self, is_active):
         """ E-Stopの状態を設定する (True=停止/LOW, False=解除/HIGH) """
         pin = self.config.estop_pin
