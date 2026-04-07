@@ -2,16 +2,15 @@ import tkinter as tk
 from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError
-from ui_utils import disable_all_widgets_on_error, reset_ui_state
+from runtime_state import OperationState
+from ui_utils import disable_all_widgets_on_error, reset_ui_state, set_operation_state
 
 
 def attempt_one_time_comm_recovery(state, add_log):
     if state.is_closing:
-        state.comm_recovery_in_progress = False
         return
 
     if not state.device:
-        state.comm_recovery_in_progress = False
         return
 
     try:
@@ -32,7 +31,8 @@ def attempt_one_time_comm_recovery(state, add_log):
         except tk.TclError:
             pass
 
-        state.comm_recovery_in_progress = False
+        # Transition back to IDLE on successful recovery
+        set_operation_state(state, OperationState.IDLE, add_log)
     except Exception as recover_err:
         print(f"Auto recovery failed: {recover_err}")
         try:
@@ -56,7 +56,8 @@ def attempt_one_time_comm_recovery(state, add_log):
             pass
 
         disable_all_widgets_on_error(state)
-        state.comm_recovery_in_progress = False
+        # Transition to FAULT state on recovery failure
+        set_operation_state(state, OperationState.FAULT, add_log)
 
 
 def handle_device_comm_error(state, context, err, add_log):
@@ -64,10 +65,11 @@ def handle_device_comm_error(state, context, err, add_log):
     if state.is_closing:
         return
 
-    if state.comm_recovery_in_progress:
+    if state.operation_state == OperationState.RECOVERING:
         return
 
-    state.comm_recovery_in_progress = True
+    # Transition to RECOVERING state
+    set_operation_state(state, OperationState.RECOVERING, add_log)
 
     if state.device:
         state.device.is_connected = False
@@ -92,6 +94,4 @@ def handle_device_comm_error(state, context, err, add_log):
         try:
             current_root.after(300, lambda: attempt_one_time_comm_recovery(state, add_log))
         except tk.TclError:
-            state.comm_recovery_in_progress = False
-    else:
-        state.comm_recovery_in_progress = False
+            pass

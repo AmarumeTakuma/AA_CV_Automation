@@ -6,8 +6,9 @@ from tkinter import filedialog, messagebox, ttk
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
 from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
+from runtime_state import OperationState
 from selection_manager import is_exclusive_interlock_enabled
-from ui_utils import init_gui_vars, reset_ui_state, toggle_ui_lock
+from ui_utils import init_gui_vars, reset_ui_state, toggle_ui_lock, set_operation_state, can_start_measurement, can_estop
 
 
 def finish_measurement_handler(state, add_log):
@@ -25,6 +26,9 @@ def finish_measurement_handler(state, add_log):
                 f"Measurement completed: {state.current_measurement.target_cell} "
                 f"({state.current_measurement.save_dir}/{state.current_measurement.filename})"
             )
+        
+        # Transition back to IDLE
+        set_operation_state(state, OperationState.IDLE, add_log)
         reset_ui_state(state)
         try:
             state.status_label.config(text="Measurement COMPLETED.")
@@ -33,11 +37,11 @@ def finish_measurement_handler(state, add_log):
 
 
 def execute_start_measurement(state, filename, save_dir, target_cell, add_log, handle_device_comm_error):
-    now = time.monotonic()
-    if state.start_in_progress or (now - state.last_start_time) < state.start_cooldown_sec:
+    if not can_start_measurement(state):
         return
 
-    state.start_in_progress = True
+    # Transition to MEASURING state
+    set_operation_state(state, OperationState.MEASURING, add_log)
 
     try:
         state.current_measurement = MeasurementSession(
@@ -62,16 +66,19 @@ def execute_start_measurement(state, filename, save_dir, target_cell, add_log, h
             state.status_label.config(text=f"Measurement STARTED: {target_cell}")
             add_log("Measurement started.")
             state.last_start_time = time.monotonic()
+        else:
+            set_operation_state(state, OperationState.IDLE, add_log)
     except DeviceCommunicationError as err:
+        set_operation_state(state, OperationState.IDLE, add_log)
         handle_device_comm_error("execute_start_measurement", err)
     except DeviceTimeoutError as err:
         print(f"Device Timeout in execute_start_measurement: {err}")
+        set_operation_state(state, OperationState.IDLE, add_log)
         if not state.is_closing:
             messagebox.showerror("Device Error", str(err))
     except Exception as err:
         print(f"Error in execute_start_measurement: {err}")
-    finally:
-        state.start_in_progress = False
+        set_operation_state(state, OperationState.IDLE, add_log)
 
 
 def show_start_dialog(state, add_log, handle_device_comm_error):
@@ -157,19 +164,16 @@ def on_start(state, add_log, handle_device_comm_error):
 
 
 def on_estop(state, add_log, handle_device_comm_error):
-    if not state.device.is_connected or state.is_closing:
+    if not can_estop(state):
+        state.estop_var.set(0)
         return
     if state.config.estop_pin < 0:
         state.estop_var.set(0)
         reset_ui_state(state)
         return
 
-    now = time.monotonic()
-    if state.estop_in_progress or (now - state.last_estop_time) < state.estop_cooldown_sec:
-        state.estop_var.set(0)
-        return
-
-    state.estop_in_progress = True
+    # Transition to ESTOP_PENDING
+    set_operation_state(state, OperationState.ESTOP_PENDING, add_log)
 
     try:
         if state.estop_var.get():
@@ -192,6 +196,8 @@ def on_estop(state, add_log, handle_device_comm_error):
                         state.estop_var.set(0)
                         state.status_label.config(text="E-STOP Released.")
                         add_log("E-STOP released. System reset.")
+                        # Transition back to IDLE
+                        set_operation_state(state, OperationState.IDLE, add_log)
                 except tk.TclError:
                     pass
 
@@ -200,15 +206,16 @@ def on_estop(state, add_log, handle_device_comm_error):
         else:
             state.device.set_digital(state.config.estop_pin, 1)
     except DeviceCommunicationError as err:
+        set_operation_state(state, OperationState.IDLE, add_log)
         handle_device_comm_error("on_estop", err)
     except DeviceTimeoutError as err:
         print(f"Device Timeout in on_estop: {err}")
+        set_operation_state(state, OperationState.IDLE, add_log)
         if not state.is_closing:
             messagebox.showerror("Device Error", str(err))
     except Exception as err:
         print(f"Error in on_estop: {err}")
-    finally:
-        state.estop_in_progress = False
+        set_operation_state(state, OperationState.IDLE, add_log)
 
 
 def on_init_btn(state, add_log, handle_device_comm_error):
@@ -250,6 +257,7 @@ def on_close(state, add_log):
     print("Application closing...")
     add_log("Application closing...")
     state.is_closing = True
+    set_operation_state(state, OperationState.STOPPED, add_log)
 
     try:
         if state.device:

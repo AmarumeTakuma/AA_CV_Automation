@@ -1,4 +1,15 @@
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class OperationState(Enum):
+    """Application operation state machine."""
+    IDLE = "idle"
+    MEASURING = "measuring"
+    ESTOP_PENDING = "estop_pending"
+    RECOVERING = "recovering"
+    FAULT = "fault"
+    STOPPED = "stopped"
 
 
 @dataclass
@@ -8,10 +19,7 @@ class RuntimeState:
     root: object = None
 
     is_closing: bool = False
-    comm_recovery_in_progress: bool = False
-    start_in_progress: bool = False
-    estop_in_progress: bool = False
-    exclusive_toggle_in_progress: bool = False
+    operation_state: OperationState = OperationState.IDLE
 
     last_start_time: float = 0.0
     last_estop_time: float = 0.0

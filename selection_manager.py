@@ -2,6 +2,7 @@ import time
 from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
+from runtime_state import OperationState
 
 
 def is_exclusive_interlock_enabled(state):
@@ -24,7 +25,7 @@ def update_master_checkboxes(state):
 
 
 def on_master_click(state, cell_name, on_elec_click, add_log=None):
-    if not state.device.is_connected or state.is_closing:
+    if not state.device.is_connected or state.is_closing or state.operation_state != OperationState.IDLE:
         return
 
     selected = state.master_chk_vars[cell_name].get()
@@ -55,7 +56,7 @@ def on_master_click(state, cell_name, on_elec_click, add_log=None):
 
 
 def on_elec_click(state, name, handle_device_comm_error, update_gui=True):
-    if not state.device.is_connected or state.is_closing:
+    if not state.device.is_connected or state.is_closing or state.operation_state != OperationState.IDLE:
         return
 
     try:
@@ -110,7 +111,7 @@ def on_elec_click(state, name, handle_device_comm_error, update_gui=True):
 
 
 def on_gas_click(state, name, handle_device_comm_error, update_gui=True):
-    if not state.device.is_connected or state.is_closing:
+    if not state.device.is_connected or state.is_closing or state.operation_state != OperationState.IDLE:
         return
 
     try:
@@ -157,10 +158,9 @@ def on_gas_click(state, name, handle_device_comm_error, update_gui=True):
 
 
 def on_toggle_exclusive(state, add_log, on_init_btn, handle_device_comm_error):
-    if state.is_closing or state.exclusive_toggle_in_progress:
+    if state.is_closing or state.operation_state != OperationState.IDLE:
         return
 
-    state.exclusive_toggle_in_progress = True
     try:
         enabled = is_exclusive_interlock_enabled(state)
 
@@ -190,8 +190,6 @@ def on_toggle_exclusive(state, add_log, on_init_btn, handle_device_comm_error):
         handle_device_comm_error("on_toggle_exclusive", err)
     except Exception:
         pass
-    finally:
-        state.exclusive_toggle_in_progress = False
 
 
 def on_panel_closing(state):

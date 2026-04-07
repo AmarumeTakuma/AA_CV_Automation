@@ -1,6 +1,8 @@
 import datetime
 import tkinter as tk
 
+from runtime_state import OperationState
+
 
 def add_log(state, message):
     """Add a timestamped log entry to the log history combobox."""
@@ -21,6 +23,52 @@ def add_log(state, message):
         combo.current(0)
     except tk.TclError:
         pass
+
+
+def set_operation_state(state, new_state, add_log_func=None):
+    """Set new operation state and log transition."""
+    old_state = state.operation_state
+    state.operation_state = new_state
+    if add_log_func:
+        add_log_func(f"[STATE] {old_state.value} -> {new_state.value}")
+
+
+def is_state_allowed(state, required_state):
+    """Check if operation is allowed in current state."""
+    if isinstance(required_state, list):
+        return state.operation_state in required_state
+    else:
+        return state.operation_state == required_state
+
+
+def can_start_measurement(state):
+    """Check if measurement can be started (only in IDLE state with device connected)."""
+    return (
+        state.operation_state == OperationState.IDLE
+        and state.device
+        and state.device.is_connected
+        and not state.is_closing
+    )
+
+
+def can_estop(state):
+    """Check if E-STOP can be triggered (allowed from IDLE or MEASURING with device connected)."""
+    return (
+        state.operation_state in (OperationState.IDLE, OperationState.MEASURING)
+        and state.device
+        and state.device.is_connected
+        and not state.is_closing
+    )
+
+
+def can_interact(state):
+    """Check if user can interact (only in IDLE state with device connected)."""
+    return (
+        state.operation_state == OperationState.IDLE
+        and state.device
+        and state.device.is_connected
+        and not state.is_closing
+    )
 
 
 def init_gui_vars(state):

@@ -1,6 +1,7 @@
 from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
+from runtime_state import OperationState
 from selection_manager import is_exclusive_interlock_enabled
 from ui_utils import reset_ui_state
 
@@ -25,9 +26,7 @@ def comm_watchdog_loop(state, handle_device_comm_error):
         if (
             state.device
             and state.device.is_connected
-            and not state.comm_recovery_in_progress
-            and not state.start_in_progress
-            and not state.estop_in_progress
+            and state.operation_state not in (OperationState.RECOVERING, OperationState.FAULT, OperationState.STOPPED)
         ):
             state.device.probe_communication()
     except (DeviceCommunicationError, DeviceTimeoutError) as err:
