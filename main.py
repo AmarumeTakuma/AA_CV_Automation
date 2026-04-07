@@ -1,8 +1,10 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog, ttk
 import time
 import sys
 import datetime
+import os
+from dataclasses import dataclass
 
 # 自作モジュール
 from config_manager import ConfigManager
@@ -26,6 +28,20 @@ START_COOLDOWN_SEC = 0.8
 ESTOP_COOLDOWN_SEC = 0.5
 ESTOP_PULSE_DURATION_SEC = 0.5  # E-STOP実際のパルス幅（デバイス側と同期）
 
+
+@dataclass
+class MeasurementSession:
+    filename: str
+    save_dir: str
+    target_cell: str
+    started_at: datetime.datetime
+    selected_electrodes: list
+    selected_gas_lines: list
+    exclusive_interlock_enabled: bool
+    serial_port: str
+    ended_at: datetime.datetime = None
+    status: str = "running"
+
 # GUIの状態管理（IntVar を格納する辞書）
 elec_chk_vars = {} # 電極のチェックボックス状態 (0 or 1)
 master_chk_vars = {} # セル全体の一括チェックボックス状態 (0 or 1)
@@ -40,6 +56,8 @@ exclusive_var = None # 排他処理有効/無効スイッチ (1=ON, 0=OFF)
 # 全ウィジェットのリスト（UIロック用）
 all_widgets = []
 log_combo = None
+current_measurement = None
+measurement_history = []
 
 # ==========================================
 # ロジック関数 (GUIから呼ばれる処理)
@@ -184,6 +202,7 @@ def check_incoming_data():
         pass
 
 def finish_measurement_handler():
+    global current_measurement
     if is_closing: return
     
     try:
@@ -191,11 +210,150 @@ def finish_measurement_handler():
     except Exception as e:
         print(f"Error in finish_measurement_handler: {e}")
     finally:
+        if current_measurement and current_measurement.status == "running":
+            current_measurement.ended_at = datetime.datetime.now()
+            current_measurement.status = "completed"
+            add_log(
+                f"Measurement completed: {current_measurement.target_cell} "
+                f"({current_measurement.save_dir}/{current_measurement.filename})"
+            )
         reset_ui_state()
         try:
             status_label.config(text="Measurement COMPLETED.")
         except tk.TclError:
             pass
+
+
+def get_selected_electrodes():
+    selected = []
+    for name, var in elec_chk_vars.items():
+        if var.get():
+            selected.append(name)
+    return selected
+
+
+def get_selected_gas_lines():
+    selected = []
+    for name, var in gas_chk_vars.items():
+        if var.get():
+            selected.append(name)
+    return selected
+
+
+def show_start_dialog():
+    if is_closing:
+        return
+
+    dialog = tk.Toplevel(root)
+    dialog.title("Measurement Setup")
+    dialog.geometry("420x300")
+    dialog.transient(root)
+    dialog.grab_set()
+
+    tk.Label(dialog, text="File name", font=("Arial", 10, "bold")).pack(pady=(15, 0))
+    fname_frame = tk.Frame(dialog)
+    fname_frame.pack()
+
+    default_name = f"measurement_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    file_name_var = tk.StringVar(value=default_name)
+    tk.Entry(fname_frame, textvariable=file_name_var, width=28).pack(side=tk.LEFT)
+    tk.Label(fname_frame, text=".csv").pack(side=tk.LEFT)
+
+    tk.Label(dialog, text="Save directory", font=("Arial", 10, "bold")).pack(pady=(10, 0))
+    dir_frame = tk.Frame(dialog)
+    dir_frame.pack()
+    save_dir_var = tk.StringVar(value=os.getcwd())
+    tk.Entry(dir_frame, textvariable=save_dir_var, width=28).pack(side=tk.LEFT)
+
+    def browse_dir():
+        chosen = filedialog.askdirectory(initialdir=save_dir_var.get())
+        if chosen:
+            save_dir_var.set(chosen)
+
+    tk.Button(dir_frame, text="Browse...", command=browse_dir).pack(side=tk.LEFT, padx=5)
+
+    tk.Label(dialog, text="Target cell", font=("Arial", 10, "bold")).pack(pady=(10, 0))
+    cell_var = tk.StringVar()
+    cells = list(config.cells_and_electrodes.keys())
+    cell_combo = ttk.Combobox(dialog, textvariable=cell_var, values=cells, state="readonly", width=18)
+    if cells:
+        cell_combo.current(0)
+    cell_combo.pack()
+
+    btn_frame = tk.Frame(dialog)
+    btn_frame.pack(pady=20)
+
+    def on_confirm():
+        filename_base = file_name_var.get().strip()
+        save_dir = save_dir_var.get().strip()
+        target_cell = cell_var.get().strip()
+
+        if not filename_base:
+            messagebox.showwarning("Input Error", "File name is required.")
+            return
+        if not save_dir:
+            messagebox.showwarning("Input Error", "Save directory is required.")
+            return
+        if not target_cell:
+            messagebox.showwarning("Input Error", "Target cell is required.")
+            return
+
+        dialog.destroy()
+        execute_start_measurement(
+            filename=f"{filename_base}.csv",
+            save_dir=save_dir,
+            target_cell=target_cell,
+        )
+
+    tk.Button(btn_frame, text="Start", command=on_confirm, bg="#ccffcc", width=14).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=8)
+
+
+def execute_start_measurement(filename, save_dir, target_cell):
+    global start_in_progress, last_start_time, current_measurement
+
+    now = time.monotonic()
+    if start_in_progress or (now - last_start_time) < START_COOLDOWN_SEC:
+        return
+
+    start_in_progress = True
+
+    try:
+        current_measurement = MeasurementSession(
+            filename=filename,
+            save_dir=save_dir,
+            target_cell=target_cell,
+            started_at=datetime.datetime.now(),
+            selected_electrodes=get_selected_electrodes(),
+            selected_gas_lines=get_selected_gas_lines(),
+            exclusive_interlock_enabled=is_exclusive_interlock_enabled(),
+            serial_port=config.serial_port,
+        )
+        measurement_history.append(current_measurement)
+
+        add_log(
+            f"Measurement start request: {target_cell} "
+            f"(save: {save_dir}/{filename})"
+        )
+
+        if device.start_measurement():
+            print("Measurement STARTED. (UI Locked)")
+            start_btn.config(relief=tk.SUNKEN)
+            root.update()  # ボタンのへこむ状態を即座に画面に反映
+            toggle_ui_lock(True)
+            status_label.config(text=f"Measurement STARTED: {target_cell}")
+            add_log("Measurement started.")
+            last_start_time = time.monotonic()
+    except DeviceCommunicationError as e:
+        handle_device_comm_error("execute_start_measurement", e)
+    except DeviceTimeoutError as e:
+        print(f"Device Timeout in execute_start_measurement: {e}")
+        if not is_closing:
+            messagebox.showerror("Device Error", str(e))
+    except Exception as e:
+        print(f"Error in execute_start_measurement: {e}")
+    finally:
+        start_in_progress = False
 
 def disable_all_widgets_on_error():
     if is_closing: return
@@ -514,38 +672,12 @@ def on_gas_click(name, update_gui=True):
         print(f"Error in on_gas_click: {e}")
 
 def on_start():
-    global start_in_progress, last_start_time
-
     if not device.is_connected or is_closing: return
     if config.di1_output_pin < 0:
         messagebox.showinfo("Info", "DI1 Output Pin Disabled")
         return
 
-    now = time.monotonic()
-    if start_in_progress or (now - last_start_time) < START_COOLDOWN_SEC:
-        return
-
-    start_in_progress = True
-
-    try:
-        if device.start_measurement():
-            print("Measurement STARTED. (UI Locked)")
-            start_btn.config(relief=tk.SUNKEN)
-            root.update()  # ボタンのへこむ状態を即座に画面に反映
-            toggle_ui_lock(True)
-            status_label.config(text="Measurement STARTED.")
-            add_log("Measurement started.")
-            last_start_time = time.monotonic()
-    except DeviceCommunicationError as e:
-        handle_device_comm_error("on_start", e)
-    except DeviceTimeoutError as e:
-        print(f"Device Timeout in on_start: {e}")
-        if not is_closing:
-            messagebox.showerror("Device Error", str(e))
-    except Exception as e:
-        print(f"Error in on_start: {e}")
-    finally:
-        start_in_progress = False
+    show_start_dialog()
 
 def on_estop():
     global estop_in_progress, last_estop_time
