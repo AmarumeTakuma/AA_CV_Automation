@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import ttk
 
 
 class MainUI:
@@ -19,6 +20,7 @@ class MainUI:
         self.estop_chk = None
         self.btn_init = None
         self.btn_exit = None
+        self.log_combo = None
         self.status_label = None
 
     def build(self):
@@ -127,6 +129,12 @@ class MainUI:
         )
         self.btn_exit.pack(side=tk.RIGHT)
         self.lockable_widgets.append(self.btn_exit)
+
+        log_frame = tk.Frame(self.root)
+        log_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 5))
+        tk.Label(log_frame, text="Log History:", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        self.log_combo = ttk.Combobox(log_frame, state="readonly", font=("Arial", 9))
+        self.log_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
 
         self.status_label = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)

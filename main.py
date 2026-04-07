@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 import time
 import sys
+import datetime
 
 # 自作モジュール
 from config_manager import ConfigManager
@@ -36,10 +37,32 @@ estop_var = None # エマストのON/OFF状態 (0 or 1)
 
 # 全ウィジェットのリスト（UIロック用）
 all_widgets = []
+log_combo = None
 
 # ==========================================
 # ロジック関数 (GUIから呼ばれる処理)
 # ==========================================
+
+
+def add_log(message):
+    """Add a timestamped log entry to the log history combobox."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {message}"
+    print(line)
+
+    combo = globals().get("log_combo")
+    if not combo:
+        return
+
+    try:
+        if not combo.winfo_exists():
+            return
+        logs = list(combo["values"])
+        logs.insert(0, line)
+        combo["values"] = logs
+        combo.current(0)
+    except tk.TclError:
+        pass
 
 def connect_app():
     if is_closing: return
@@ -58,12 +81,14 @@ def connect_app():
         # ユーザーがNoを選んだら、接続処理をやめて待機状態にする
         if not attempt_anyway:
             status_label.config(text="Connection aborted. Please check COM port.")
+            add_log("Connection aborted. Please check COM port.")
             return
 
     # 実際の接続処理（ポートが存在した、またはYesが押された場合）
     try:
         if not device.connect():
             status_label.config(text="Connection failed.")
+            add_log("Connection failed.")
             return
     except DeviceCommunicationError as e:
         print(f"Connection Error: {e}")
@@ -73,6 +98,7 @@ def connect_app():
         return
 
     status_label.config(text=f"Connected to {config.serial_port}. Initializing...")
+    add_log(f"Connected to {config.serial_port}. Initializing...")
     root.update()
     
     if is_closing: return
@@ -83,6 +109,7 @@ def connect_app():
             try:
                 if root.winfo_exists():
                     status_label.config(text="Connected and Ready.")
+                    add_log("Initialization completed. Connected and Ready.")
                     reset_ui_state()
             except tk.TclError:
                 pass
@@ -92,6 +119,7 @@ def connect_app():
             comm_watchdog_loop()
         else:
             print("Initialization Error: Device initialization failed.")
+            add_log("Initialization failed.")
             if not is_closing:
                 messagebox.showerror("Error", "Initialization failed.")
                 root.destroy()
@@ -211,6 +239,7 @@ def attempt_one_time_comm_recovery():
         reset_ui_state()
         try:
             status_label.config(text="Recovered from communication error. Ready.")
+            add_log("Communication recovered: Auto reconnection successful.")
         except tk.TclError:
             pass
 
@@ -225,6 +254,7 @@ def attempt_one_time_comm_recovery():
 
         try:
             status_label.config(text="Disconnected. Please restart the application.")
+            add_log("Auto recovery failed: Application restart required.")
         except Exception:
             pass
 
@@ -256,6 +286,7 @@ def handle_device_comm_error(context, err):
 
     try:
         status_label.config(text="Communication error detected. Trying auto recovery once...")
+        add_log(f"Communication error detected in {context}. Attempting auto recovery...")
     except Exception:
         pass
 
@@ -453,6 +484,7 @@ def on_start():
             start_btn.config(state=tk.DISABLED, relief=tk.SUNKEN)
             toggle_ui_lock(True)
             status_label.config(text="Measurement STARTED.")
+            add_log("Measurement started.")
             last_start_time = time.monotonic()
     except DeviceCommunicationError as e:
         handle_device_comm_error("on_start", e)
@@ -487,6 +519,7 @@ def on_estop():
             device.trigger_estop() # 緊急停止パルス送信 & 測定停止
             estop_chk.config(fg="white", bg="red")
             status_label.config(text="E-STOP ACTIVATED!")
+            add_log("E-STOP activated.")
             
             # GUIリセット
             root.update()
@@ -498,6 +531,7 @@ def on_estop():
             estop_chk.config(fg="black", bg="#ffcccc")
             print("E-Stop Released. System Reset.")
             status_label.config(text="E-STOP Released.")
+            add_log("E-STOP released. System reset.")
             last_estop_time = time.monotonic()
         else:
             # 万が一OFF操作されたらHighに戻す
@@ -515,6 +549,7 @@ def on_estop():
 
 def on_init_btn():
     print("Manual initialization requested.")
+    add_log("Manual initialization requested.")
     try:
         if device.initialize_devices():
             try:
@@ -531,6 +566,7 @@ def on_init_btn():
                         estop_btn.config(fg="black", bg="#ffcccc")
                     estop_var.set(0)
                     status_label.config(text="Initialized.")
+                    add_log("Manual initialization completed.")
                 
                 # UI ロック解除
                 reset_ui_state()
@@ -554,6 +590,7 @@ def init_gui_vars():
 def on_close():
     global is_closing
     print("Application closing...")
+    add_log("Application closing...")
     is_closing = True
     device.close()
     root.destroy()
@@ -566,6 +603,7 @@ if __name__ == '__main__':
     # Tkinterの土台を先に作る（エラーのポップアップを安全に出すため）
     root = tk.Tk()
     root.title("Electrode Controller")
+    root.geometry("900x750")
 
     # 設定の読み込みとデバイスの準備
     try:
@@ -607,7 +645,10 @@ if __name__ == '__main__':
     estop_chk = ui.estop_chk
     estop_btn = ui.estop_chk
     btn_exit = ui.btn_exit
+    log_combo = ui.log_combo
     status_label = ui.status_label
+
+    add_log("Application started. Ready.")
 
     # イベントバインド
     root.protocol("WM_DELETE_WINDOW", on_close)
