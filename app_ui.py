@@ -255,6 +255,10 @@ class MainUI:
     def toggle_panel(self):
         """Toggle the accordion detail panel visibility."""
         if self.is_expanded:
+            # About to close the panel - call callback if available
+            if "on_panel_closing" in self.callbacks:
+                self.callbacks["on_panel_closing"]()
+            
             self.detail_panel.pack_forget()
             self.toggle_button.config(text="> Individual Controls")
         else:
