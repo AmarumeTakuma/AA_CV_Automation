@@ -7,17 +7,43 @@ PC上のPythonアプリ(`main.py`)からArduinoを経由して、リレー（電
 
 ```
 AA_CV_Automation/
-├── main.py                 # メイン制御アプリケーション (GUI: config読み込み、操作パネル)
-├── pyproject.toml          # uv / Python プロジェクト設定と依存関係定義
-├── uv.lock                 # uv が生成するロックファイル（依存バージョン固定）
-├── settings.json           # システム全体の設定ファイル (ピン配置、セル構成、サーボ設定)
-├── update_config.py        # Arduino用設定ヘッダ(config.h)生成スクリプト
-├── requirements.txt        # 依存関係リスト（互換用）
-├── README.md               # 本ドキュメント
-└── arduino_firmware/       # Arduino用ファームウェアフォルダ
-    ├── arduino_firmware.ino # Arduinoメインファームウェア
-    └── config.h            # update_config.pyによって自動生成される設定ヘッダ（生成後）
+├── main.py                      # メイン制御アプリケーション (起動・配線のみ)
+├── runtime_state.py             # 共有状態管理 (OperationState Enum)
+├── ui_utils.py                  # UI・ログ・状態遷移ヘルパー関数
+├── selection_manager.py         # 電極・ガスライン・排他制御ロジック
+├── measurement_workflow.py      # 測定フロー・E-STOP・初期化処理
+├── error_handler.py             # 通信エラー・リカバリ処理
+├── device_lifecycle.py          # デバイス接続・ハートビート・watchdog
+├── measurement_service.py       # 測定セッション管理 (@dataclass)
+├── app_ui.py                    # Tkinter GUI構築とウィジェット管理
+├── config_manager.py            # settings.json 読み込み・検証
+├── device_controller.py         # Arduino シリアル通信 API
+├── pyproject.toml               # uv / Python プロジェクト設定と依存関係定義
+├── uv.lock                      # uv が生成するロックファイル（依存バージョン固定）
+├── settings.json                # システム全体の設定ファイル (ピン配置、セル構成、サーボ設定)
+├── update_config.py             # Arduino用設定ヘッダ(config.h)生成スクリプト
+├── requirements.txt             # 依存関係リスト（互換用）
+├── README.md                    # 本ドキュメント
+└── arduino_firmware/            # Arduino用ファームウェアフォルダ
+    ├── arduino_firmware.ino     # Arduinoメインファームウェア
+    └── config.h                 # update_config.pyによって自動生成される設定ヘッダ（生成後）
 ```
+
+### Python モジュール設計
+
+Pythonアプリは機能別に以下の7つのモジュールに分割されています：
+
+| モジュール | 責務 |
+| :--- | :--- |
+| `main.py` | アプリ起動・UI構築・コールバック配線のみ |
+| `runtime_state.py` | 全体の状態管理（OperationState Enum: IDLE, MEASURING, ESTOP_PENDING, RECOVERING, FAULT, STOPPED） |
+| `ui_utils.py` | ログ表示・状態遷移・UI ロック・状態確認ヘルパー |
+| `selection_manager.py` | 電極・ガスライン選択・排他制御（再入防止） |
+| `measurement_workflow.py` | 測定開始・終了・E-STOP・初期化処理 |
+| `error_handler.py` | 通信エラー検出・1回リカバリ・FAULT状態遷移 |
+| `device_lifecycle.py` | デバイス接続・ハートビート送信・ watchdog ループ |
+
+
 
 ## 前提条件
 
@@ -138,19 +164,53 @@ python main.py
 
 ## 主な機能と安全機構
 
-1.  **電極切り替え (Relay Control)**
-    *   指定したセルの電極(WE/CE/RE)のみを回路に接続します。
-    *   **排他制御**: 同じ役割の電極が同時にONにならないよう、ソフトウェアおよびファームウェアレベルで二重に保護されています。
+### 1. 操作状態の統一管理（状態機械）
+すべての操作は `OperationState` Enum による状態機械で管理され、各操作は**現在の状態のみで判定**されます：
 
-2.  **ガスライン制御 (Servo Control)**
-    *   サーボモーターを指定角度に動かし、ガスの流路を切り替えます。
-    *   不感帯対策や初期化時の突入電流防止ロジックが含まれています。
+```
+IDLE (待機)
+  ├─ START → MEASURING
+  ├─ E-STOP → ESTOP_PENDING → IDLE (0.5秒後)
+  ├─ 通信エラー → RECOVERING
+  └─ 電極切り替え / ガスライン制御 / 排他制御など
+     各操作は IDLE 状態でのみ実行可能
 
-3.  **安全な信号出力 (Active Low Safety)**
-    *   Start/EstopなどのActive Lowピンに対し、Arduino起動時の意図しないLow出力（誤トリガー）を防ぐため、`digitalWrite(HIGH)` してから `pinMode(OUTPUT)` に設定する安全な初期化順序を実装しています。
+MEASURING (測定中)
+  ├─ 測定完了イベント → IDLE
+  ├─ 通信エラー → RECOVERING
+  └─ E-STOP は実行可能 → ESTOP_PENDING
 
-4.  **ウォッチドッグタイマー (Watchdog Timer)**
-    *   PCアプリからのハートビート信号（通信）が途絶えた場合（アプリのクラッシュやUSBケーブル断線時など）、設定された時間（デフォルト3000ms）経過後に自動的に緊急停止（全ピンOFF、サーボ初期化）を発動します。
+RECOVERING (通信リカバリ中)
+  ├─ リカバリ成功 → IDLE
+  └─ リカバリ失敗 → FAULT
 
-5.  **設定の一元管理**
-    *   すべてのハードウェア設定は `settings.json` に集約されており、PythonアプリとArduinoファームウェア間の設定不整合を防ぎます。
+FAULT (致命的エラー)
+  └─ アプリ再起動まで操作不可
+```
+
+**メリット**:
+- 複数フラグの矛盾を排除（旧：`start_in_progress` + `estop_in_progress` が同時に true になる可能性）
+- 状態遷移がログに記録される（デバッグが容易）
+- 許可された操作のみ実行できる多重防御
+
+### 2. 電極切り替え (Relay Control)
+指定したセルの電極(WE/CE/RE)のみを回路に接続します。
+- **排他制御**: 同じ役割の電極が同時にONにならないよう、ソフトウェアおよびファームウェアレベルで二重に保護されています。
+- 操作は `operation_state == IDLE` かつ `device.is_connected` の場合のみ許可
+
+### 3. ガスライン制御 (Servo Control)
+サーボモーターを指定角度に動かし、ガスの流路を切り替えます。
+- 不感帯対策や初期化時の突入電流防止ロジックが含まれています。
+- 操作は `operation_state == IDLE` かつ `device.is_connected` の場合のみ許可
+
+### 4. 安全な信号出力 (Active Low Safety)
+Start/EstopなどのActive Lowピンの初期化時における安全性を確保します。
+- Arduino起動時の意図しないLow出力（誤トリガー）を防ぐため、`digitalWrite(HIGH)` してから `pinMode(OUTPUT)` に設定する安全な初期化順序を実装
+
+### 5. ウォッチドッグタイマー (Watchdog Timer)
+PCアプリからのハートビート信号（通信）が途絶えた場合に自動的に緊急停止を発動します。
+- アプリのクラッシュやUSBケーブル断線時など、設定された時間（デフォルト3000ms）経過後に全ピンOFF、サーボ初期化を実行
+
+### 6. 設定管理 (Config Management)
+すべてのハードウェア設定は `settings.json` に集約されており、PythonアプリとArduinoファームウェア間の設定不整合を防ぎます。
+- `update_config.py` を実行して `arduino_firmware/config.h` を自動生成
