@@ -24,6 +24,7 @@ last_start_time = 0.0
 last_estop_time = 0.0
 START_COOLDOWN_SEC = 0.8
 ESTOP_COOLDOWN_SEC = 0.5
+ESTOP_PULSE_DURATION_SEC = 0.5  # E-STOP実際のパルス幅（デバイス側と同期）
 
 # GUIの状態管理（IntVar を格納する辞書）
 elec_chk_vars = {} # 電極のチェックボックス状態 (0 or 1)
@@ -314,7 +315,7 @@ def reset_ui_state():
     
     try:
         toggle_ui_lock(False)
-        if start_btn: start_btn.config(state=tk.NORMAL, relief=tk.RAISED)
+        if start_btn: start_btn.config(relief=tk.RAISED)
     except tk.TclError:
         pass
 
@@ -481,7 +482,8 @@ def on_start():
     try:
         if device.start_measurement():
             print("Measurement STARTED. (UI Locked)")
-            start_btn.config(state=tk.DISABLED, relief=tk.SUNKEN)
+            start_btn.config(relief=tk.SUNKEN)
+            root.update()  # ボタンのへこむ状態を即座に画面に反映
             toggle_ui_lock(True)
             status_label.config(text="Measurement STARTED.")
             add_log("Measurement started.")
@@ -515,23 +517,33 @@ def on_estop():
 
     try:
         if estop_var.get():
-            print("!!! EMERGENCY STOP ACTIVATED !!!")
-            device.trigger_estop() # 緊急停止パルス送信 & 測定停止
-            estop_chk.config(fg="white", bg="red")
+            # まず色を赤に（背景と文字色を同時に）+ 押下状態を視覚化
+            estop_chk.config(bg="red", fg="white", relief=tk.SUNKEN)
             status_label.config(text="E-STOP ACTIVATED!")
+            root.update()  # 画面描画を反映
+            
+            print("!!! EMERGENCY STOP ACTIVATED !!!")
             add_log("E-STOP activated.")
             
-            # GUIリセット
-            root.update()
-            reset_ui_state()
-            estop_var.set(0)
+            # ここでブロッキング処理（0.5秒）
+            device.trigger_estop()
             
-            # 全体リセット(変数を戻す)
+            # GUIリセット
+            reset_ui_state()
             init_gui_vars()
-            estop_chk.config(fg="black", bg="#ffcccc")
-            print("E-Stop Released. System Reset.")
-            status_label.config(text="E-STOP Released.")
-            add_log("E-STOP released. System reset.")
+            
+            # 0.5秒後に色とチェック状態を戻す
+            def reset_estop_button_color():
+                try:
+                    if root.winfo_exists():
+                        estop_chk.config(bg="#ffcccc", fg="black", relief=tk.RAISED)
+                        estop_var.set(0)
+                        status_label.config(text="E-STOP Released.")
+                        add_log("E-STOP released. System reset.")
+                except tk.TclError:
+                    pass
+            
+            root.after(int(ESTOP_PULSE_DURATION_SEC * 1000), reset_estop_button_color)
             last_estop_time = time.monotonic()
         else:
             # 万が一OFF操作されたらHighに戻す
@@ -559,9 +571,9 @@ def on_init_btn():
                 # ボタン・ウィジェットの見た目をリセット
                 if root.winfo_exists():
                     if start_btn:
-                        start_btn.config(state=tk.NORMAL, relief=tk.RAISED)
+                        start_btn.config(relief=tk.RAISED)
                     if di1_btn:
-                        di1_btn.config(state=tk.NORMAL, relief=tk.RAISED)
+                        di1_btn.config(relief=tk.RAISED)
                     if estop_btn:
                         estop_btn.config(fg="black", bg="#ffcccc")
                     estop_var.set(0)
@@ -592,8 +604,18 @@ def on_close():
     print("Application closing...")
     add_log("Application closing...")
     is_closing = True
-    device.close()
-    root.destroy()
+    
+    # デバイスを安全にクローズ
+    try:
+        if device:
+            device.close()
+    except Exception as e:
+        print(f"Error closing device: {e}")
+    
+    try:
+        root.destroy()
+    except Exception as e:
+        print(f"Error destroying window: {e}")
 
 # ==========================================
 # メイン実行 (GUI構築と初期化)
