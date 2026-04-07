@@ -17,6 +17,7 @@ int lastDoneState = HIGH;
 // ウォッチドッグ用
 unsigned long lastHeartbeatTime = 0;
 bool watchdogActive = false;
+bool interlockEnabled = true;
 
 void setup() {
   // 通信設定（config.h に BAUDRATE が定義されていればそれを使い、なければ9600）
@@ -156,6 +157,10 @@ bool isValidPin(int pin) {
 
 // 排他制御チェック
 bool checkInterlock(int targetPin) {
+  if (!interlockEnabled) {
+    return true;
+  }
+
   for (int i=0; i<PAIR_COUNT; i++) {
     int pinA = EXCLUSIVE_PAIRS[i][0];
     int pinB = EXCLUSIVE_PAIRS[i][1];
@@ -274,6 +279,17 @@ void parseCommand(String cmd) {
       Serial.println("Error: SV format (expected SV,pin,angle)."); 
     }
     
+  } else if (cmd.startsWith("IL,")) {
+    // Interlock control command (IL,1=ON / IL,0=OFF)
+    int comma = cmd.indexOf(',');
+    if (comma > 0) {
+      int val = cmd.substring(comma + 1).toInt();
+      interlockEnabled = (val != 0);
+      Serial.print("Executed IL:");
+      Serial.println(interlockEnabled ? "ON" : "OFF");
+    } else {
+      Serial.println("Error: IL format (expected IL,0/1).");
+    }
   } else {
     if (cmd.length() > 0) {
         Serial.println("Error: Unknown command prefix.");

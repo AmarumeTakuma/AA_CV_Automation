@@ -35,6 +35,7 @@ gas_chk_vars = {} # ガスラインのチェックボックス状態 (0 or 1)
 di1_btn = None # DI1トリガーボタン (元 start_btn)
 estop_btn = None # エマストのチェックボタン本体 (見た目や色を変える用)
 estop_var = None # エマストのON/OFF状態 (0 or 1)
+exclusive_var = None # 排他処理有効/無効スイッチ (1=ON, 0=OFF)
 
 # 全ウィジェットのリスト（UIロック用）
 all_widgets = []
@@ -108,6 +109,7 @@ def connect_app():
         if device.initialize_devices():
             print("Initialization successful. Connected and Ready.")
             try:
+                device.set_interlock_enabled(is_exclusive_interlock_enabled())
                 if root.winfo_exists():
                     status_label.config(text="Connected and Ready.")
                     add_log("Initialization completed. Connected and Ready.")
@@ -332,6 +334,49 @@ def toggle_ui_lock(is_locked):
     except tk.TclError:
         pass
 
+def is_exclusive_interlock_enabled():
+    """Return True when exclusive interlock mode is enabled in UI."""
+    var = globals().get('exclusive_var')
+    if var is None:
+        return True
+    try:
+        return bool(var.get())
+    except Exception:
+        return True
+
+def on_toggle_exclusive():
+    if is_closing:
+        return
+    try:
+        enabled = is_exclusive_interlock_enabled()
+
+        if not enabled:
+            proceed = messagebox.askyesno(
+                "Disable Interlock",
+                "Exclusive interlock will be disabled.\n"
+                "This may allow conflicting outputs to be ON at the same time.\n\n"
+                "Do you want to continue?"
+            )
+            if not proceed:
+                if exclusive_var is not None:
+                    exclusive_var.set(1)
+                status_label.config(text="Exclusive interlock: ON")
+                add_log("Exclusive interlock disable canceled.")
+                return
+
+        if device and device.is_connected:
+            device.set_interlock_enabled(enabled)
+        status_label.config(text=f"Exclusive interlock: {'ON' if enabled else 'OFF'}")
+        add_log(f"Exclusive interlock switched {'ON' if enabled else 'OFF'}.")
+
+        if enabled and device and device.is_connected:
+            add_log("Exclusive interlock enabled. Running initialize.")
+            on_init_btn()
+    except (DeviceCommunicationError, DeviceTimeoutError) as e:
+        handle_device_comm_error("on_toggle_exclusive", e)
+    except Exception:
+        pass
+
 # ==========================================
 # ボタン操作イベント
 # ==========================================
@@ -348,14 +393,15 @@ def on_master_click(cell_name):
                 elec_chk_vars[ename].set(0)
                 on_elec_click(ename, update_gui=False)
     else:
-        # 他セル切断
-        for other_cell in config.cells_and_electrodes:
-            if other_cell != cell_name:
-                master_chk_vars[other_cell].set(0)
-                for ename in config.cells_and_electrodes[other_cell]:
-                    if elec_chk_vars[ename].get():
-                        elec_chk_vars[ename].set(0)
-                        on_elec_click(ename, update_gui=False)
+        # 排他ON時のみ他セルを切断
+        if is_exclusive_interlock_enabled():
+            for other_cell in config.cells_and_electrodes:
+                if other_cell != cell_name:
+                    master_chk_vars[other_cell].set(0)
+                    for ename in config.cells_and_electrodes[other_cell]:
+                        if elec_chk_vars[ename].get():
+                            elec_chk_vars[ename].set(0)
+                            on_elec_click(ename, update_gui=False)
         # このセルを全接続
         for ename in config.cells_and_electrodes[cell_name]:
             if not elec_chk_vars[ename].get():
@@ -381,22 +427,23 @@ def on_elec_click(name, update_gui=True):
             return
         
         if state == 1:
-            # 排他制御
-            ch = config.reverse_elec_exclusive.get(name)
-            if not ch:
-                error_msg = (f"Config Error:\nElectrode '{name}' is not assigned to any exclusive channel.\nPlease check settings.")
-                print(error_msg)
-                messagebox.showerror("Configuration Error", error_msg)
-                elec_chk_vars[name].set(0)
-                return
+            # 排他制御（OFF時はスキップ）
+            if is_exclusive_interlock_enabled():
+                ch = config.reverse_elec_exclusive.get(name)
+                if not ch:
+                    error_msg = (f"Config Error:\nElectrode '{name}' is not assigned to any exclusive channel.\nPlease check settings.")
+                    print(error_msg)
+                    messagebox.showerror("Configuration Error", error_msg)
+                    elec_chk_vars[name].set(0)
+                    return
 
-            for other in config.elec_exclusive_channels.get(ch, []):
-                if other != name and other in elec_chk_vars and elec_chk_vars[other].get():
-                    other_pin = config.electrode_map.get(other)
-                    if other_pin is not None:
-                        elec_chk_vars[other].set(0)
-                        device.set_digital(other_pin, 0)
-                        time.sleep(0.05)
+                for other in config.elec_exclusive_channels.get(ch, []):
+                    if other != name and other in elec_chk_vars and elec_chk_vars[other].get():
+                        other_pin = config.electrode_map.get(other)
+                        if other_pin is not None:
+                            elec_chk_vars[other].set(0)
+                            device.set_digital(other_pin, 0)
+                            time.sleep(0.05)
             device.set_digital(pin, 1)
         else:
             device.set_digital(pin, 0)
@@ -439,16 +486,17 @@ def on_gas_click(name, update_gui=True):
             return
         
         if state == 1:
-            # 排他制御
-            ch = config.reverse_gas_exclusive.get(name)
-            if ch:
-                for other in config.gas_exclusive_channels.get(ch, []):
-                    if other != name and other in gas_chk_vars and gas_chk_vars[other].get():
-                        gas_chk_vars[other].set(0)
-                        other_s = config.servo_map.get(other)
-                        if other_s:
-                            device.set_servo(other_s['pin'], other_s['off_angle'])
-                            time.sleep(0.1)
+            # 排他制御（OFF時はスキップ）
+            if is_exclusive_interlock_enabled():
+                ch = config.reverse_gas_exclusive.get(name)
+                if ch:
+                    for other in config.gas_exclusive_channels.get(ch, []):
+                        if other != name and other in gas_chk_vars and gas_chk_vars[other].get():
+                            gas_chk_vars[other].set(0)
+                            other_s = config.servo_map.get(other)
+                            if other_s:
+                                device.set_servo(other_s['pin'], other_s['off_angle'])
+                                time.sleep(0.1)
             device.set_servo(s['pin'], s['on_angle'])
         else:
             device.set_servo(s['pin'], s['off_angle'])
@@ -649,6 +697,7 @@ if __name__ == '__main__':
             "on_master_click": on_master_click,
             "on_elec_click": on_elec_click,
             "on_gas_click": on_gas_click,
+            "on_toggle_exclusive": on_toggle_exclusive,
             "on_start": on_start,
             "on_estop": on_estop,
             "on_init_btn": on_init_btn,
@@ -666,6 +715,7 @@ if __name__ == '__main__':
     estop_var = ui.estop_var
     estop_chk = ui.estop_chk
     estop_btn = ui.estop_chk
+    exclusive_var = ui.exclusive_var
     btn_exit = ui.btn_exit
     log_combo = ui.log_combo
     status_label = ui.status_label

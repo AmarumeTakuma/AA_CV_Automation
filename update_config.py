@@ -4,6 +4,22 @@ import sys
 
 FIRMWARE_DIR_NAME = "arduino_firmware"
 
+
+def print_post_generate_checklist(firmware_dir, header_filename):
+    """Print a short reminder checklist to prevent missing Arduino upload."""
+    ino_path = os.path.join(firmware_dir, "arduino_firmware.ino")
+    header_path = os.path.join(firmware_dir, header_filename)
+
+    print("\n=== Next Step Checklist ===")
+    print("1) Open Arduino IDE and load:")
+    print(f"   - {ino_path}")
+    print("2) Confirm generated header is present:")
+    print(f"   - {header_path}")
+    print("3) Verify board/port selection matches your target device.")
+    print("4) Upload sketch to Arduino.")
+    print("5) Start the desktop app after upload completes.")
+    print("===========================\n")
+
 def generate_arduino_header(json_filename="settings.json", header_filename="config.h"):
     # 実行ファイル（main.pyまたはexe）と同じ場所にあるJSONを探す
     if getattr(sys, 'frozen', False):
@@ -177,6 +193,7 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
         print(f" - Path: {header_path}")
         print(f" - Exclusive Pairs: {len(exclusive_pairs)}")
         print("Please upload this config to Arduino now.")
+        print_post_generate_checklist(firmware_dir, header_filename)
         
     except Exception as e:
         print(f"[Error] Failed to write header file:\n{e}")

@@ -219,3 +219,8 @@ class ArduinoDevice:
         
         val = 0 if is_active else 1
         return self.send_command(f"DO,{pin},{val}\n")
+
+    def set_interlock_enabled(self, enabled):
+        """Firmware側の排他制御を有効/無効に切り替える。"""
+        val = 1 if enabled else 0
+        return self.send_command(f"IL,{val}\n")
