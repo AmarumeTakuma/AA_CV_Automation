@@ -6,6 +6,7 @@ import sys
 # 自作モジュール
 from config_manager import ConfigManager
 from device_controller import ArduinoDevice, DeviceCommunicationError, DeviceTimeoutError
+from app_ui import MainUI
 
 # ==========================================
 # グローバル変数
@@ -581,78 +582,32 @@ if __name__ == '__main__':
         messagebox.showerror("Initialization Error", str(e))
         sys.exit(1)
 
-    main_frame = tk.Frame(root)
-    main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    ui = MainUI(
+        root,
+        config,
+        {
+            "on_master_click": on_master_click,
+            "on_elec_click": on_elec_click,
+            "on_gas_click": on_gas_click,
+            "on_start": on_start,
+            "on_estop": on_estop,
+            "on_init_btn": on_init_btn,
+            "on_close": on_close,
+        },
+    )
+    ui.build()
 
-    # 左カラム：電極
-    left_col = tk.LabelFrame(main_frame, text="Electrodes", padx=5, pady=5)
-    left_col.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.N)
-
-    for cell, elecs in config.cells_and_electrodes.items():
-        cf = tk.LabelFrame(left_col, text=cell, font=("bold", 10))
-        cf.pack(fill=tk.X, pady=5)
-        
-        mv = tk.IntVar()
-        master_cb = tk.Checkbutton(cf, text="All", variable=mv, 
-                       command=lambda c=cell: on_master_click(c))
-        master_cb.pack(anchor=tk.W)
-        master_chk_vars[cell] = mv
-        all_widgets.append(master_cb)
-
-        for ename in elecs:
-            ev = tk.IntVar()
-            etype = ename.split('-')[1]
-            cb = tk.Checkbutton(cf, text=etype, variable=ev, padx=10,
-                           command=lambda n=ename: on_elec_click(n))
-            cb.pack(anchor=tk.W)
-            elec_chk_vars[ename] = ev
-            all_widgets.append(cb)
-
-    # 右カラム
-    right_col = tk.Frame(main_frame)
-    right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
-
-    # ガス
-    gf = tk.LabelFrame(right_col, text="Gas Control", padx=5, pady=5)
-    gf.pack(fill=tk.X, pady=5)
-    for gname, s in config.servo_map.items():
-        if s.get('pin', -1) < 0: continue
-        gv = tk.IntVar()
-        cb = tk.Checkbutton(gf, text=gname, variable=gv,
-                       command=lambda n=gname: on_gas_click(n))
-        cb.pack(anchor=tk.W)
-        gas_chk_vars[gname] = gv
-        all_widgets.append(cb)
-
-    # 測定制御
-    cf = tk.LabelFrame(right_col, text="Measurement", padx=5, pady=5)
-    cf.pack(fill=tk.X, pady=5)
-    
-    start_btn = tk.Button(cf, text="START", bg="#ccffcc", height=2, command=on_start)
-    start_btn.pack(fill=tk.X, pady=5)
-    di1_btn = start_btn
-    
-    estop_var = tk.IntVar()
-    estop_chk = tk.Checkbutton(cf, text="E-STOP [Esc]", bg="#ffcccc", variable=estop_var,
-                               indicatoron=0, selectcolor="red", height=2, 
-                               font=("Arial", 9, "bold"), command=on_estop)
-    estop_chk.pack(fill=tk.X, pady=5)
-    estop_btn = estop_chk
-
-    # 下部
-    bf = tk.Frame(root)
-    bf.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
-    
-    btn_init = tk.Button(bf, text="Initialize All", width=15, command=on_init_btn)
-    btn_init.pack(side=tk.LEFT)
-    all_widgets.append(btn_init)
-    
-    btn_exit = tk.Button(bf, text="Exit", width=15, command=on_close)
-    btn_exit.pack(side=tk.RIGHT)
-    all_widgets.append(btn_exit)
-
-    status_label = tk.Label(root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
-    status_label.pack(side=tk.BOTTOM, fill=tk.X)
+    elec_chk_vars = ui.elec_chk_vars
+    master_chk_vars = ui.master_chk_vars
+    gas_chk_vars = ui.gas_chk_vars
+    all_widgets = ui.lockable_widgets
+    start_btn = ui.start_btn
+    di1_btn = ui.start_btn
+    estop_var = ui.estop_var
+    estop_chk = ui.estop_chk
+    estop_btn = ui.estop_chk
+    btn_exit = ui.btn_exit
+    status_label = ui.status_label
 
     # イベントバインド
     root.protocol("WM_DELETE_WINDOW", on_close)
