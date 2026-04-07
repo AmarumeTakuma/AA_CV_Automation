@@ -1,851 +1,105 @@
-import tkinter as tk
-from tkinter import messagebox, filedialog, ttk
-import time
 import sys
-import datetime
-import os
-from dataclasses import dataclass
+import tkinter as tk
+from tkinter import messagebox
 
-# 自作モジュール
-from config_manager import ConfigManager
-from device_controller import ArduinoDevice, DeviceCommunicationError, DeviceTimeoutError
 from app_ui import MainUI
-
-# ==========================================
-# グローバル変数
-# ==========================================
-
-# システム・通信系
-config = None
-device = None
-is_closing = False # アプリ終了中の判定フラグ（Trueのときはエラーなど出さずに終了に専念）
-comm_recovery_in_progress = False # 通信異常時の1回リカバリ中フラグ
-start_in_progress = False
-estop_in_progress = False
-exclusive_toggle_in_progress = False # 排他チェックボックス切り替え中フラグ（再入防止）
-last_start_time = 0.0
-last_estop_time = 0.0
-START_COOLDOWN_SEC = 0.8
-ESTOP_COOLDOWN_SEC = 0.5
-ESTOP_PULSE_DURATION_SEC = 0.5  # E-STOP実際のパルス幅（デバイス側と同期）
+from config_manager import ConfigManager
+from device_controller import ArduinoDevice
+from device_lifecycle import connect_app as connect_app_impl
+from error_handler import handle_device_comm_error as handle_device_comm_error_impl
+from measurement_workflow import finish_measurement_handler as finish_measurement_handler_impl
+from measurement_workflow import on_close as on_close_impl
+from measurement_workflow import on_estop as on_estop_impl
+from measurement_workflow import on_init_btn as on_init_btn_impl
+from measurement_workflow import on_start as on_start_impl
+from runtime_state import RuntimeState
+from selection_manager import on_elec_click as on_elec_click_impl
+from selection_manager import on_gas_click as on_gas_click_impl
+from selection_manager import on_master_click as on_master_click_impl
+from selection_manager import on_panel_closing as on_panel_closing_impl
+from selection_manager import on_toggle_exclusive as on_toggle_exclusive_impl
+from ui_utils import add_log as add_log_impl
 
 
-@dataclass
-class MeasurementSession:
-    filename: str
-    save_dir: str
-    target_cell: str
-    started_at: datetime.datetime
-    selected_electrodes: list
-    selected_gas_lines: list
-    exclusive_interlock_enabled: bool
-    serial_port: str
-    ended_at: datetime.datetime = None
-    status: str = "running"
-
-# GUIの状態管理（IntVar を格納する辞書）
-elec_chk_vars = {} # 電極のチェックボックス状態 (0 or 1)
-master_chk_vars = {} # セル全体の一括チェックボックス状態 (0 or 1)
-gas_chk_vars = {} # ガスラインのチェックボックス状態 (0 or 1)
-
-# 特殊なボタン・ウィジェット本体
-di1_btn = None # DI1トリガーボタン (元 start_btn)
-estop_btn = None # エマストのチェックボタン本体 (見た目や色を変える用)
-estop_var = None # エマストのON/OFF状態 (0 or 1)
-exclusive_var = None # 排他処理有効/無効スイッチ (1=ON, 0=OFF)
-
-# 全ウィジェットのリスト（UIロック用）
-all_widgets = []
-log_combo = None
-current_measurement = None
-measurement_history = []
-
-# ==========================================
-# ロジック関数 (GUIから呼ばれる処理)
-# ==========================================
+state = RuntimeState()
 
 
 def add_log(message):
-    """Add a timestamped log entry to the log history combobox."""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {message}"
-    print(line)
+    add_log_impl(state, message)
 
-    combo = globals().get("log_combo")
-    if not combo:
-        return
-
-    try:
-        if not combo.winfo_exists():
-            return
-        logs = list(combo["values"])
-        logs.insert(0, line)
-        combo["values"] = logs
-        combo.current(0)
-    except tk.TclError:
-        pass
-
-def connect_app():
-    if is_closing: return
-    
-    # 接続前にポートの存在チェック
-    port_exists, available_ports = device.check_port_available()
-    
-    if not port_exists:
-        ports_str = ", ".join(available_ports) if available_ports else "None"
-        warn_msg = (f"Port '{config.serial_port}' is NOT detected on this PC.\n\n"
-                    f"Available ports: [{ports_str}]\n\n"
-                    f"Do you want to attempt connection anyway?\n"
-                    f"(Select 'No' to abort and check your settings.json)")
-        attempt_anyway = messagebox.askyesno("Port Not Found", warn_msg) # 単なる警告ではなく、ユーザーに選択させる (Yes/No)
-        
-        # ユーザーがNoを選んだら、接続処理をやめて待機状態にする
-        if not attempt_anyway:
-            status_label.config(text="Connection aborted. Please check COM port.")
-            add_log("Connection aborted. Please check COM port.")
-            return
-
-    # 実際の接続処理（ポートが存在した、またはYesが押された場合）
-    try:
-        if not device.connect():
-            status_label.config(text="Connection failed.")
-            add_log("Connection failed.")
-            return
-    except DeviceCommunicationError as e:
-        print(f"Connection Error: {e}")
-        if not is_closing:
-            messagebox.showerror("Connection Error", str(e))
-            root.destroy()
-        return
-
-    status_label.config(text=f"Connected to {config.serial_port}. Initializing...")
-    add_log(f"Connected to {config.serial_port}. Initializing...")
-    root.update()
-    
-    if is_closing: return
-
-    try:
-        if device.initialize_devices():
-            print("Initialization successful. Connected and Ready.")
-            try:
-                device.set_interlock_enabled(is_exclusive_interlock_enabled())
-                if root.winfo_exists():
-                    status_label.config(text="Connected and Ready.")
-                    add_log("Initialization completed. Connected and Ready.")
-                    reset_ui_state()
-            except tk.TclError:
-                pass
-            # 定期タスク開始
-            check_incoming_data()
-            send_heartbeat_loop()
-            comm_watchdog_loop()
-        else:
-            print("Initialization Error: Device initialization failed.")
-            add_log("Initialization failed.")
-            if not is_closing:
-                messagebox.showerror("Error", "Initialization failed.")
-                root.destroy()
-    except (DeviceCommunicationError, DeviceTimeoutError) as e:
-        print(f"Initialization Error: {e}")
-        if not is_closing:
-            messagebox.showerror("Initialization Error", str(e))
-            root.destroy()
-
-def send_heartbeat_loop():
-    if is_closing: return
-    device.send_heartbeat()
-    
-    # 次回予約（ウィンドウが存在する場合のみ）
-    try:
-        if root.winfo_exists() and not is_closing:
-            root.after(config.heartbeat_interval, send_heartbeat_loop)
-    except:
-        pass
-
-def comm_watchdog_loop():
-    if is_closing:
-        return
-
-    try:
-        if (device and device.is_connected and not comm_recovery_in_progress
-            and not start_in_progress and not estop_in_progress):
-            device.probe_communication()
-    except (DeviceCommunicationError, DeviceTimeoutError) as e:
-        handle_device_comm_error("comm_watchdog", e)
-    except Exception as e:
-        print(f"Error in comm_watchdog_loop: {e}")
-
-    try:
-        if root.winfo_exists() and not is_closing:
-            interval_ms = max(1000, int(config.watchdog_timeout / 2))
-            root.after(interval_ms, comm_watchdog_loop)
-    except:
-        pass
-
-def check_incoming_data():
-    if is_closing: return
-    
-    try:
-        line = device.read_line()
-        while line:
-            print(f"[Arduino] {line}")
-            if "MEASUREMENT_END" in line:
-                finish_measurement_handler()
-            line = device.read_line()
-    except Exception as e:
-        print(f"Serial Read Error: {e}")
-    
-    # 次回予約（ウィンドウが存在する場合のみ）
-    try:
-        if root.winfo_exists() and not is_closing:
-            root.after(100, check_incoming_data)
-    except:
-        pass
-
-def finish_measurement_handler():
-    global current_measurement
-    if is_closing: return
-    
-    try:
-        device.stop_measurement()
-    except Exception as e:
-        print(f"Error in finish_measurement_handler: {e}")
-    finally:
-        if current_measurement and current_measurement.status == "running":
-            current_measurement.ended_at = datetime.datetime.now()
-            current_measurement.status = "completed"
-            add_log(
-                f"Measurement completed: {current_measurement.target_cell} "
-                f"({current_measurement.save_dir}/{current_measurement.filename})"
-            )
-        reset_ui_state()
-        try:
-            status_label.config(text="Measurement COMPLETED.")
-        except tk.TclError:
-            pass
-
-
-def get_selected_electrodes():
-    selected = []
-    for name, var in elec_chk_vars.items():
-        if var.get():
-            selected.append(name)
-    return selected
-
-
-def get_selected_gas_lines():
-    selected = []
-    for name, var in gas_chk_vars.items():
-        if var.get():
-            selected.append(name)
-    return selected
-
-
-def show_start_dialog():
-    if is_closing:
-        return
-
-    dialog = tk.Toplevel(root)
-    dialog.title("Measurement Setup")
-    dialog.geometry("420x300")
-    dialog.transient(root)
-    dialog.grab_set()
-
-    tk.Label(dialog, text="File name", font=("Arial", 10, "bold")).pack(pady=(15, 0))
-    fname_frame = tk.Frame(dialog)
-    fname_frame.pack()
-
-    default_name = f"measurement_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    file_name_var = tk.StringVar(value=default_name)
-    tk.Entry(fname_frame, textvariable=file_name_var, width=28).pack(side=tk.LEFT)
-    tk.Label(fname_frame, text=".csv").pack(side=tk.LEFT)
-
-    tk.Label(dialog, text="Save directory", font=("Arial", 10, "bold")).pack(pady=(10, 0))
-    dir_frame = tk.Frame(dialog)
-    dir_frame.pack()
-    save_dir_var = tk.StringVar(value=os.getcwd())
-    tk.Entry(dir_frame, textvariable=save_dir_var, width=28).pack(side=tk.LEFT)
-
-    def browse_dir():
-        chosen = filedialog.askdirectory(initialdir=save_dir_var.get())
-        if chosen:
-            save_dir_var.set(chosen)
-
-    tk.Button(dir_frame, text="Browse...", command=browse_dir).pack(side=tk.LEFT, padx=5)
-
-    tk.Label(dialog, text="Target cell", font=("Arial", 10, "bold")).pack(pady=(10, 0))
-    cell_var = tk.StringVar()
-    cells = list(config.cells_and_electrodes.keys())
-    cell_combo = ttk.Combobox(dialog, textvariable=cell_var, values=cells, state="readonly", width=18)
-    if cells:
-        cell_combo.current(0)
-    cell_combo.pack()
-
-    btn_frame = tk.Frame(dialog)
-    btn_frame.pack(pady=20)
-
-    def on_confirm():
-        filename_base = file_name_var.get().strip()
-        save_dir = save_dir_var.get().strip()
-        target_cell = cell_var.get().strip()
-
-        if not filename_base:
-            messagebox.showwarning("Input Error", "File name is required.")
-            return
-        if not save_dir:
-            messagebox.showwarning("Input Error", "Save directory is required.")
-            return
-        if not target_cell:
-            messagebox.showwarning("Input Error", "Target cell is required.")
-            return
-
-        dialog.destroy()
-        execute_start_measurement(
-            filename=f"{filename_base}.csv",
-            save_dir=save_dir,
-            target_cell=target_cell,
-        )
-
-    tk.Button(btn_frame, text="Start", command=on_confirm, bg="#ccffcc", width=14).pack(side=tk.LEFT, padx=8)
-    tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=8)
-
-
-def execute_start_measurement(filename, save_dir, target_cell):
-    global start_in_progress, last_start_time, current_measurement
-
-    now = time.monotonic()
-    if start_in_progress or (now - last_start_time) < START_COOLDOWN_SEC:
-        return
-
-    start_in_progress = True
-
-    try:
-        current_measurement = MeasurementSession(
-            filename=filename,
-            save_dir=save_dir,
-            target_cell=target_cell,
-            started_at=datetime.datetime.now(),
-            selected_electrodes=get_selected_electrodes(),
-            selected_gas_lines=get_selected_gas_lines(),
-            exclusive_interlock_enabled=is_exclusive_interlock_enabled(),
-            serial_port=config.serial_port,
-        )
-        measurement_history.append(current_measurement)
-
-        add_log(
-            f"Measurement start request: {target_cell} "
-            f"(save: {save_dir}/{filename})"
-        )
-
-        if device.start_measurement():
-            print("Measurement STARTED. (UI Locked)")
-            start_btn.config(relief=tk.SUNKEN)
-            root.update()  # ボタンのへこむ状態を即座に画面に反映
-            toggle_ui_lock(True)
-            status_label.config(text=f"Measurement STARTED: {target_cell}")
-            add_log("Measurement started.")
-            last_start_time = time.monotonic()
-    except DeviceCommunicationError as e:
-        handle_device_comm_error("execute_start_measurement", e)
-    except DeviceTimeoutError as e:
-        print(f"Device Timeout in execute_start_measurement: {e}")
-        if not is_closing:
-            messagebox.showerror("Device Error", str(e))
-    except Exception as e:
-        print(f"Error in execute_start_measurement: {e}")
-    finally:
-        start_in_progress = False
-
-def disable_all_widgets_on_error():
-    if is_closing: return
-
-    exit_btn = globals().get('btn_exit')
-
-    for widget in all_widgets:
-        if widget is exit_btn:
-            continue
-        if hasattr(widget, 'config'):
-            try:
-                widget.config(state=tk.DISABLED)
-            except tk.TclError:
-                pass
-
-    if exit_btn and hasattr(exit_btn, 'config'):
-        try:
-            exit_btn.config(state=tk.NORMAL)
-        except tk.TclError:
-            pass
-
-def attempt_one_time_comm_recovery():
-    global comm_recovery_in_progress
-
-    if is_closing:
-        comm_recovery_in_progress = False
-        return
-
-    if not device:
-        comm_recovery_in_progress = False
-        return
-
-    try:
-        # 半断線状態を避けるため、一度ポートを閉じてから再接続を試みる
-        if device.ser and device.ser.is_open:
-            device.ser.close()
-        device.is_connected = False
-
-        if not device.connect():
-            raise DeviceCommunicationError("Auto reconnect failed.")
-        if not device.initialize_devices():
-            raise DeviceCommunicationError("Auto re-initialization failed.")
-
-        reset_ui_state()
-        try:
-            status_label.config(text="Recovered from communication error. Ready.")
-            add_log("Communication recovered: Auto reconnection successful.")
-        except tk.TclError:
-            pass
-
-        comm_recovery_in_progress = False
-    except Exception as recover_err:
-        print(f"Auto recovery failed: {recover_err}")
-        try:
-            device.close()
-        except Exception:
-            pass
-        device.is_connected = False
-
-        try:
-            status_label.config(text="Disconnected. Please restart the application.")
-            add_log("Auto recovery failed: Application restart required.")
-        except Exception:
-            pass
-
-        try:
-            messagebox.showerror(
-                "Communication Error",
-                f"Auto recovery failed.\n\nDetails: {recover_err}\n\nPlease restart the application."
-            )
-        except tk.TclError:
-            pass
-
-        disable_all_widgets_on_error()
-        comm_recovery_in_progress = False
 
 def handle_device_comm_error(context, err):
-    global comm_recovery_in_progress
+    handle_device_comm_error_impl(state, context, err, add_log)
 
-    print(f"Device Communication Error in {context}: {err}")
-    if is_closing:
-        return
 
-    if comm_recovery_in_progress:
-        return
+def finish_measurement_handler():
+    finish_measurement_handler_impl(state, add_log)
 
-    comm_recovery_in_progress = True
 
-    if device:
-        device.is_connected = False
+def connect_app():
+    connect_app_impl(state, add_log, handle_device_comm_error, finish_measurement_handler)
 
-    try:
-        status_label.config(text="Communication error detected. Trying auto recovery once...")
-        add_log(f"Communication error detected in {context}. Attempting auto recovery...")
-    except Exception:
-        pass
-
-    disable_all_widgets_on_error()
-
-    for extra_name in ('start_btn', 'di1_btn', 'estop_chk'):
-        extra = globals().get(extra_name)
-        if extra:
-            try:
-                extra.config(state=tk.DISABLED)
-            except tk.TclError:
-                pass
-
-    current_root = globals().get('root')
-    if current_root and current_root.winfo_exists():
-        try:
-            current_root.after(300, attempt_one_time_comm_recovery)
-        except tk.TclError:
-            comm_recovery_in_progress = False
-    else:
-        comm_recovery_in_progress = False
-
-def reset_ui_state():
-    if is_closing: return
-    
-    try:
-        toggle_ui_lock(False)
-        if start_btn: start_btn.config(relief=tk.RAISED)
-    except tk.TclError:
-        pass
-
-def toggle_ui_lock(is_locked):
-    if is_closing: return
-    
-    allowed = [estop_chk]
-    try:
-        for widget in all_widgets:
-            if not hasattr(widget, 'config'):
-                continue
-            if widget in allowed: continue
-            widget.config(state=tk.DISABLED if is_locked else tk.NORMAL)
-    except tk.TclError:
-        pass
-
-def is_exclusive_interlock_enabled():
-    """Return True when exclusive interlock mode is enabled in UI."""
-    var = globals().get('exclusive_var')
-    if var is None:
-        return True
-    try:
-        return bool(var.get())
-    except Exception:
-        return True
-
-def on_toggle_exclusive():
-    global exclusive_toggle_in_progress
-    
-    if is_closing or exclusive_toggle_in_progress:
-        return
-    
-    exclusive_toggle_in_progress = True
-    try:
-        enabled = is_exclusive_interlock_enabled()
-
-        if not enabled:
-            proceed = messagebox.askyesno(
-                "Disable Interlock",
-                "Exclusive interlock will be disabled.\n"
-                "This may allow conflicting outputs to be ON at the same time.\n\n"
-                "Do you want to continue?"
-            )
-            if not proceed:
-                if exclusive_var is not None:
-                    exclusive_var.set(1)
-                status_label.config(text="Exclusive interlock: ON")
-                add_log("Exclusive interlock disable canceled.")
-                return
-
-        if device and device.is_connected:
-            device.set_interlock_enabled(enabled)
-        status_label.config(text=f"Exclusive interlock: {'ON' if enabled else 'OFF'}")
-        add_log(f"Exclusive interlock switched {'ON' if enabled else 'OFF'}.")
-
-        if enabled and device and device.is_connected:
-            add_log("Exclusive interlock enabled. Running initialize.")
-            on_init_btn()
-    except (DeviceCommunicationError, DeviceTimeoutError) as e:
-        handle_device_comm_error("on_toggle_exclusive", e)
-    except Exception:
-        pass
-    finally:
-        exclusive_toggle_in_progress = False
-
-def on_panel_closing():
-    """Show warning when closing Individual Controls panel while interlock is OFF."""
-    if is_closing or exclusive_var is None:
-        return
-    
-    if exclusive_var.get() == 0:  # Interlock is OFF
-        messagebox.showinfo(
-            "Individual Controls Closing",
-            "Exclusive interlock is currently OFF.\n"
-            "Conflicting outputs may be active at the same time."
-        )
-
-# ==========================================
-# ボタン操作イベント
-# ==========================================
 
 def on_master_click(cell_name):
-    if not device.is_connected or is_closing: return
-    
-    state = master_chk_vars[cell_name].get()
-    
-    if state == 0:
-        # このセルを全切断
-        for ename in config.cells_and_electrodes[cell_name]:
-            if elec_chk_vars[ename].get():
-                elec_chk_vars[ename].set(0)
-                on_elec_click(ename, update_gui=False)
-    else:
-        # 排他ON時のみ他セルを切断
-        if is_exclusive_interlock_enabled():
-            for other_cell in config.cells_and_electrodes:
-                if other_cell != cell_name:
-                    master_chk_vars[other_cell].set(0)
-                    for ename in config.cells_and_electrodes[other_cell]:
-                        if elec_chk_vars[ename].get():
-                            elec_chk_vars[ename].set(0)
-                            on_elec_click(ename, update_gui=False)
-        # このセルを全接続
-        for ename in config.cells_and_electrodes[cell_name]:
-            if not elec_chk_vars[ename].get():
-                elec_chk_vars[ename].set(1)
-                on_elec_click(ename, update_gui=False)
-    
-    action_text = "Connected" if state == 1 else "Disconnected"
-    status_label.config(text=f"All electrodes in {cell_name} {action_text}.")
-    update_master_checkboxes()
+    on_master_click_impl(state, cell_name, on_elec_click)
+
 
 def on_elec_click(name, update_gui=True):
-    if not device.is_connected or is_closing: return
-    
-    try:
-        state = elec_chk_vars[name].get()
-        pin = config.electrode_map.get(name)
+    on_elec_click_impl(state, name, handle_device_comm_error, update_gui=update_gui)
 
-        if pin is None:
-            error_msg = (f"Config Error:\nElectrode '{name}' is not defined in electrode_map.\nPlease check settings.")
-            print(error_msg)
-            messagebox.showerror("Configuration Error", error_msg)
-            elec_chk_vars[name].set(0)
-            return
-        
-        if state == 1:
-            # 排他制御（OFF時はスキップ）
-            if is_exclusive_interlock_enabled():
-                ch = config.reverse_elec_exclusive.get(name)
-                if not ch:
-                    error_msg = (f"Config Error:\nElectrode '{name}' is not assigned to any exclusive channel.\nPlease check settings.")
-                    print(error_msg)
-                    messagebox.showerror("Configuration Error", error_msg)
-                    elec_chk_vars[name].set(0)
-                    return
-
-                for other in config.elec_exclusive_channels.get(ch, []):
-                    if other != name and other in elec_chk_vars and elec_chk_vars[other].get():
-                        other_pin = config.electrode_map.get(other)
-                        if other_pin is not None:
-                            elec_chk_vars[other].set(0)
-                            device.set_digital(other_pin, 0)
-                            time.sleep(0.05)
-            device.set_digital(pin, 1)
-        else:
-            device.set_digital(pin, 0)
-
-        if update_gui:
-            status_label.config(text=f"{name}: {'ON' if state else 'OFF'}")
-            update_master_checkboxes()
-    except DeviceCommunicationError as e:
-        handle_device_comm_error("on_elec_click", e)
-    except DeviceTimeoutError as e:
-        print(f"Device Timeout in on_elec_click: {e}")
-        if not is_closing:
-            messagebox.showerror("Device Error", str(e))
-    except Exception as e:
-        print(f"Error in on_elec_click: {e}")
-
-def update_master_checkboxes():
-    if is_closing: return
-    
-    try:
-        for cell, elecs in config.cells_and_electrodes.items():
-            all_on = all(elec_chk_vars[e].get() for e in elecs)
-            master_chk_vars[cell].set(1 if all_on else 0)
-    except tk.TclError:
-        pass
 
 def on_gas_click(name, update_gui=True):
-    if not device.is_connected or is_closing: return
-    
-    try:
-        state = gas_chk_vars[name].get()
-        s = config.servo_map.get(name)
+    on_gas_click_impl(state, name, handle_device_comm_error, update_gui=update_gui)
 
-        if not s:
-            error_msg = (f"Config Error:\nGas line '{name}' is not defined in servo_map.\nPlease check settings.")
-            print(error_msg)
-            messagebox.showerror("Configuration Error", error_msg)
-            if name in gas_chk_vars:
-                gas_chk_vars[name].set(0)
-            return
-        
-        if state == 1:
-            # 排他制御（OFF時はスキップ）
-            if is_exclusive_interlock_enabled():
-                ch = config.reverse_gas_exclusive.get(name)
-                if ch:
-                    for other in config.gas_exclusive_channels.get(ch, []):
-                        if other != name and other in gas_chk_vars and gas_chk_vars[other].get():
-                            gas_chk_vars[other].set(0)
-                            other_s = config.servo_map.get(other)
-                            if other_s:
-                                device.set_servo(other_s['pin'], other_s['off_angle'])
-                                time.sleep(0.1)
-            device.set_servo(s['pin'], s['on_angle'])
-        else:
-            device.set_servo(s['pin'], s['off_angle'])
 
-        if update_gui and not is_closing:
-            action_text = "Opened" if state == 1 else "Closed"
-            status_label.config(text=f"Gas line {name} {action_text}.")
-    except DeviceCommunicationError as e:
-        handle_device_comm_error("on_gas_click", e)
-    except DeviceTimeoutError as e:
-        print(f"Device Timeout in on_gas_click: {e}")
-        if not is_closing:
-            messagebox.showerror("Device Error", str(e))
-    except Exception as e:
-        print(f"Error in on_gas_click: {e}")
+def on_toggle_exclusive():
+    on_toggle_exclusive_impl(state, add_log, on_init_btn, handle_device_comm_error)
+
+
+def on_panel_closing():
+    on_panel_closing_impl(state)
+
 
 def on_start():
-    if not device.is_connected or is_closing: return
-    if config.di1_output_pin < 0:
-        messagebox.showinfo("Info", "DI1 Output Pin Disabled")
-        return
+    on_start_impl(state, add_log, handle_device_comm_error)
 
-    show_start_dialog()
 
 def on_estop():
-    global estop_in_progress, last_estop_time
+    on_estop_impl(state, add_log, handle_device_comm_error)
 
-    if not device.is_connected or is_closing: return
-    if config.estop_pin < 0:
-        estop_var.set(0)
-        reset_ui_state()
-        return
-
-    now = time.monotonic()
-    if estop_in_progress or (now - last_estop_time) < ESTOP_COOLDOWN_SEC:
-        estop_var.set(0)
-        return
-
-    estop_in_progress = True
-
-    try:
-        if estop_var.get():
-            # まず色を赤に（背景と文字色を同時に）+ 押下状態を視覚化
-            estop_chk.config(bg="red", fg="white", relief=tk.SUNKEN)
-            status_label.config(text="E-STOP ACTIVATED!")
-            root.update()  # 画面描画を反映
-            
-            print("!!! EMERGENCY STOP ACTIVATED !!!")
-            add_log("E-STOP activated.")
-            
-            # ここでブロッキング処理（0.5秒）
-            device.trigger_estop()
-            
-            # GUIリセット
-            reset_ui_state()
-            init_gui_vars()
-            
-            # 0.5秒後に色とチェック状態を戻す
-            def reset_estop_button_color():
-                try:
-                    if root.winfo_exists():
-                        estop_chk.config(bg="#ffcccc", fg="black", relief=tk.RAISED)
-                        estop_var.set(0)
-                        status_label.config(text="E-STOP Released.")
-                        add_log("E-STOP released. System reset.")
-                except tk.TclError:
-                    pass
-            
-            root.after(int(ESTOP_PULSE_DURATION_SEC * 1000), reset_estop_button_color)
-            last_estop_time = time.monotonic()
-        else:
-            # 万が一OFF操作されたらHighに戻す
-            device.set_digital(config.estop_pin, 1)
-    except DeviceCommunicationError as e:
-        handle_device_comm_error("on_estop", e)
-    except DeviceTimeoutError as e:
-        print(f"Device Timeout in on_estop: {e}")
-        if not is_closing:
-            messagebox.showerror("Device Error", str(e))
-    except Exception as e:
-        print(f"Error in on_estop: {e}")
-    finally:
-        estop_in_progress = False
 
 def on_init_btn():
-    print("Manual initialization requested.")
-    add_log("Manual initialization requested.")
-    try:
-        if device.initialize_devices():
-            try:
-                # チェックボックス等をリセット
-                init_gui_vars()
-                
-                # ボタン・ウィジェットの見た目をリセット
-                if root.winfo_exists():
-                    if start_btn:
-                        start_btn.config(relief=tk.RAISED)
-                    if di1_btn:
-                        di1_btn.config(relief=tk.RAISED)
-                    if estop_btn:
-                        estop_btn.config(fg="black", bg="#ffcccc")
-                    estop_var.set(0)
-                    if exclusive_var:
-                        exclusive_var.set(1)
-                    status_label.config(text="Initialized.")
-                    add_log("Manual initialization completed.")
-                
-                # UI ロック解除
-                reset_ui_state()
-            except tk.TclError:
-                pass
-        else:
-            if not is_closing:
-                messagebox.showerror("Error", "Initialization failed.")
-    except DeviceCommunicationError as e:
-        handle_device_comm_error("on_init_btn", e)
-    except DeviceTimeoutError as e:
-        print(f"Initialization Timeout: {e}")
-        if not is_closing:
-            messagebox.showerror("Initialization Error", str(e))
+    on_init_btn_impl(state, add_log, handle_device_comm_error)
 
-def init_gui_vars():
-    for v in elec_chk_vars.values(): v.set(0)
-    for v in master_chk_vars.values(): v.set(0)
-    for v in gas_chk_vars.values(): v.set(0)
 
 def on_close():
-    global is_closing
-    print("Application closing...")
-    add_log("Application closing...")
-    is_closing = True
-    
-    # デバイスを安全にクローズ
-    try:
-        if device:
-            device.close()
-    except Exception as e:
-        print(f"Error closing device: {e}")
-    
-    try:
-        root.destroy()
-    except Exception as e:
-        print(f"Error destroying window: {e}")
+    on_close_impl(state, add_log)
 
-# ==========================================
-# メイン実行 (GUI構築と初期化)
-# ==========================================
 
-if __name__ == '__main__':
-    # Tkinterの土台を先に作る（エラーのポップアップを安全に出すため）
+if __name__ == "__main__":
     root = tk.Tk()
     root.title("Electrode Controller")
     root.geometry("900x750")
+    state.root = root
 
-    # 設定の読み込みとデバイスの準備
     try:
-        config = ConfigManager("settings.json") # 設定読み込み
+        config = ConfigManager("settings.json")
         err = config.validate()
         if err:
             print(f"[Config Error] {err}")
             messagebox.showerror("Config Error", err)
             sys.exit(1)
         print("Configuration loaded and validated.")
-        device = ArduinoDevice(config) # デバイス管理クラスの作成
-    except Exception as e:
-        print(f"[Fatal Error] {e}")
-        messagebox.showerror("Initialization Error", str(e))
+        state.config = config
+        state.device = ArduinoDevice(config)
+    except Exception as err:
+        print(f"[Fatal Error] {err}")
+        messagebox.showerror("Initialization Error", str(err))
         sys.exit(1)
 
     ui = MainUI(
         root,
-        config,
+        state.config,
         {
             "on_master_click": on_master_click,
             "on_elec_click": on_elec_click,
@@ -860,25 +114,24 @@ if __name__ == '__main__':
     )
     ui.build()
 
-    elec_chk_vars = ui.elec_chk_vars
-    master_chk_vars = ui.master_chk_vars
-    gas_chk_vars = ui.gas_chk_vars
-    all_widgets = ui.lockable_widgets
-    start_btn = ui.start_btn
-    di1_btn = ui.start_btn
-    estop_var = ui.estop_var
-    estop_chk = ui.estop_chk
-    estop_btn = ui.estop_chk
-    exclusive_var = ui.exclusive_var
-    btn_exit = ui.btn_exit
-    log_combo = ui.log_combo
-    status_label = ui.status_label
+    state.elec_chk_vars = ui.elec_chk_vars
+    state.master_chk_vars = ui.master_chk_vars
+    state.gas_chk_vars = ui.gas_chk_vars
+    state.all_widgets = ui.lockable_widgets
+    state.start_btn = ui.start_btn
+    state.di1_btn = ui.start_btn
+    state.estop_var = ui.estop_var
+    state.estop_chk = ui.estop_chk
+    state.estop_btn = ui.estop_chk
+    state.exclusive_var = ui.exclusive_var
+    state.btn_exit = ui.btn_exit
+    state.log_combo = ui.log_combo
+    state.status_label = ui.status_label
 
     add_log("Application started. Ready.")
 
-    # イベントバインド
     root.protocol("WM_DELETE_WINDOW", on_close)
-    root.bind('<Escape>', lambda e: (estop_var.set(1), on_estop()))
+    root.bind("<Escape>", lambda _e: (state.estop_var.set(1), on_estop()))
     root.after(100, connect_app)
 
     root.mainloop()

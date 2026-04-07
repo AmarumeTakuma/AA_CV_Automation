@@ -1,0 +1,263 @@
+import datetime
+import os
+import time
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+from device_controller import DeviceCommunicationError, DeviceTimeoutError
+from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
+from selection_manager import is_exclusive_interlock_enabled
+from ui_utils import init_gui_vars, reset_ui_state, toggle_ui_lock
+
+
+def finish_measurement_handler(state, add_log):
+    if state.is_closing:
+        return
+
+    try:
+        state.device.stop_measurement()
+    except Exception as err:
+        print(f"Error in finish_measurement_handler: {err}")
+    finally:
+        if state.current_measurement and state.current_measurement.status == "running":
+            state.current_measurement.mark_completed()
+            add_log(
+                f"Measurement completed: {state.current_measurement.target_cell} "
+                f"({state.current_measurement.save_dir}/{state.current_measurement.filename})"
+            )
+        reset_ui_state(state)
+        try:
+            state.status_label.config(text="Measurement COMPLETED.")
+        except tk.TclError:
+            pass
+
+
+def execute_start_measurement(state, filename, save_dir, target_cell, add_log, handle_device_comm_error):
+    now = time.monotonic()
+    if state.start_in_progress or (now - state.last_start_time) < state.start_cooldown_sec:
+        return
+
+    state.start_in_progress = True
+
+    try:
+        state.current_measurement = MeasurementSession(
+            filename=filename,
+            save_dir=save_dir,
+            target_cell=target_cell,
+            started_at=datetime.datetime.now(),
+            selected_electrodes=collect_selected_electrodes(state.elec_chk_vars),
+            selected_gas_lines=collect_selected_gas_lines(state.gas_chk_vars),
+            exclusive_interlock_enabled=is_exclusive_interlock_enabled(state),
+            serial_port=state.config.serial_port,
+        )
+        state.measurement_history.append(state.current_measurement)
+
+        add_log(f"Measurement start request: {target_cell} (save: {save_dir}/{filename})")
+
+        if state.device.start_measurement():
+            print("Measurement STARTED. (UI Locked)")
+            state.start_btn.config(relief=tk.SUNKEN)
+            state.root.update()
+            toggle_ui_lock(state, True)
+            state.status_label.config(text=f"Measurement STARTED: {target_cell}")
+            add_log("Measurement started.")
+            state.last_start_time = time.monotonic()
+    except DeviceCommunicationError as err:
+        handle_device_comm_error("execute_start_measurement", err)
+    except DeviceTimeoutError as err:
+        print(f"Device Timeout in execute_start_measurement: {err}")
+        if not state.is_closing:
+            messagebox.showerror("Device Error", str(err))
+    except Exception as err:
+        print(f"Error in execute_start_measurement: {err}")
+    finally:
+        state.start_in_progress = False
+
+
+def show_start_dialog(state, add_log, handle_device_comm_error):
+    if state.is_closing:
+        return
+
+    dialog = tk.Toplevel(state.root)
+    dialog.title("Measurement Setup")
+    dialog.geometry("420x300")
+    dialog.transient(state.root)
+    dialog.grab_set()
+
+    tk.Label(dialog, text="File name", font=("Arial", 10, "bold")).pack(pady=(15, 0))
+    fname_frame = tk.Frame(dialog)
+    fname_frame.pack()
+
+    default_name = f"measurement_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    file_name_var = tk.StringVar(value=default_name)
+    tk.Entry(fname_frame, textvariable=file_name_var, width=28).pack(side=tk.LEFT)
+    tk.Label(fname_frame, text=".csv").pack(side=tk.LEFT)
+
+    tk.Label(dialog, text="Save directory", font=("Arial", 10, "bold")).pack(pady=(10, 0))
+    dir_frame = tk.Frame(dialog)
+    dir_frame.pack()
+    save_dir_var = tk.StringVar(value=os.getcwd())
+    tk.Entry(dir_frame, textvariable=save_dir_var, width=28).pack(side=tk.LEFT)
+
+    def browse_dir():
+        chosen = filedialog.askdirectory(initialdir=save_dir_var.get())
+        if chosen:
+            save_dir_var.set(chosen)
+
+    tk.Button(dir_frame, text="Browse...", command=browse_dir).pack(side=tk.LEFT, padx=5)
+
+    tk.Label(dialog, text="Target cell", font=("Arial", 10, "bold")).pack(pady=(10, 0))
+    cell_var = tk.StringVar()
+    cells = list(state.config.cells_and_electrodes.keys())
+    cell_combo = ttk.Combobox(dialog, textvariable=cell_var, values=cells, state="readonly", width=18)
+    if cells:
+        cell_combo.current(0)
+    cell_combo.pack()
+
+    btn_frame = tk.Frame(dialog)
+    btn_frame.pack(pady=20)
+
+    def on_confirm():
+        filename_base = file_name_var.get().strip()
+        save_dir = save_dir_var.get().strip()
+        target_cell = cell_var.get().strip()
+
+        if not filename_base:
+            messagebox.showwarning("Input Error", "File name is required.")
+            return
+        if not save_dir:
+            messagebox.showwarning("Input Error", "Save directory is required.")
+            return
+        if not target_cell:
+            messagebox.showwarning("Input Error", "Target cell is required.")
+            return
+
+        dialog.destroy()
+        execute_start_measurement(
+            state=state,
+            filename=f"{filename_base}.csv",
+            save_dir=save_dir,
+            target_cell=target_cell,
+            add_log=add_log,
+            handle_device_comm_error=handle_device_comm_error,
+        )
+
+    tk.Button(btn_frame, text="Start", command=on_confirm, bg="#ccffcc", width=14).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=8)
+
+
+def on_start(state, add_log, handle_device_comm_error):
+    if not state.device.is_connected or state.is_closing:
+        return
+    if state.config.di1_output_pin < 0:
+        messagebox.showinfo("Info", "DI1 Output Pin Disabled")
+        return
+
+    show_start_dialog(state, add_log, handle_device_comm_error)
+
+
+def on_estop(state, add_log, handle_device_comm_error):
+    if not state.device.is_connected or state.is_closing:
+        return
+    if state.config.estop_pin < 0:
+        state.estop_var.set(0)
+        reset_ui_state(state)
+        return
+
+    now = time.monotonic()
+    if state.estop_in_progress or (now - state.last_estop_time) < state.estop_cooldown_sec:
+        state.estop_var.set(0)
+        return
+
+    state.estop_in_progress = True
+
+    try:
+        if state.estop_var.get():
+            state.estop_chk.config(bg="red", fg="white", relief=tk.SUNKEN)
+            state.status_label.config(text="E-STOP ACTIVATED!")
+            state.root.update()
+
+            print("!!! EMERGENCY STOP ACTIVATED !!!")
+            add_log("E-STOP activated.")
+
+            state.device.trigger_estop()
+
+            reset_ui_state(state)
+            init_gui_vars(state)
+
+            def reset_estop_button_color():
+                try:
+                    if state.root.winfo_exists():
+                        state.estop_chk.config(bg="#ffcccc", fg="black", relief=tk.RAISED)
+                        state.estop_var.set(0)
+                        state.status_label.config(text="E-STOP Released.")
+                        add_log("E-STOP released. System reset.")
+                except tk.TclError:
+                    pass
+
+            state.root.after(int(state.estop_pulse_duration_sec * 1000), reset_estop_button_color)
+            state.last_estop_time = time.monotonic()
+        else:
+            state.device.set_digital(state.config.estop_pin, 1)
+    except DeviceCommunicationError as err:
+        handle_device_comm_error("on_estop", err)
+    except DeviceTimeoutError as err:
+        print(f"Device Timeout in on_estop: {err}")
+        if not state.is_closing:
+            messagebox.showerror("Device Error", str(err))
+    except Exception as err:
+        print(f"Error in on_estop: {err}")
+    finally:
+        state.estop_in_progress = False
+
+
+def on_init_btn(state, add_log, handle_device_comm_error):
+    print("Manual initialization requested.")
+    add_log("Manual initialization requested.")
+    try:
+        if state.device.initialize_devices():
+            try:
+                init_gui_vars(state)
+
+                if state.root.winfo_exists():
+                    if state.start_btn:
+                        state.start_btn.config(relief=tk.RAISED)
+                    if state.di1_btn:
+                        state.di1_btn.config(relief=tk.RAISED)
+                    if state.estop_btn:
+                        state.estop_btn.config(fg="black", bg="#ffcccc")
+                    state.estop_var.set(0)
+                    if state.exclusive_var:
+                        state.exclusive_var.set(1)
+                    state.status_label.config(text="Initialized.")
+                    add_log("Manual initialization completed.")
+
+                reset_ui_state(state)
+            except tk.TclError:
+                pass
+        else:
+            if not state.is_closing:
+                messagebox.showerror("Error", "Initialization failed.")
+    except DeviceCommunicationError as err:
+        handle_device_comm_error("on_init_btn", err)
+    except DeviceTimeoutError as err:
+        print(f"Initialization Timeout: {err}")
+        if not state.is_closing:
+            messagebox.showerror("Initialization Error", str(err))
+
+
+def on_close(state, add_log):
+    print("Application closing...")
+    add_log("Application closing...")
+    state.is_closing = True
+
+    try:
+        if state.device:
+            state.device.close()
+    except Exception as err:
+        print(f"Error closing device: {err}")
+
+    try:
+        state.root.destroy()
+    except Exception as err:
+        print(f"Error destroying window: {err}")
