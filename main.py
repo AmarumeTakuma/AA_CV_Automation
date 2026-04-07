@@ -4,12 +4,12 @@ import time
 import sys
 import datetime
 import os
-from dataclasses import dataclass
 
 # 自作モジュール
 from config_manager import ConfigManager
 from device_controller import ArduinoDevice, DeviceCommunicationError, DeviceTimeoutError
 from app_ui import MainUI
+from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
 
 # ==========================================
 # グローバル変数
@@ -27,20 +27,6 @@ last_estop_time = 0.0
 START_COOLDOWN_SEC = 0.8
 ESTOP_COOLDOWN_SEC = 0.5
 ESTOP_PULSE_DURATION_SEC = 0.5  # E-STOP実際のパルス幅（デバイス側と同期）
-
-
-@dataclass
-class MeasurementSession:
-    filename: str
-    save_dir: str
-    target_cell: str
-    started_at: datetime.datetime
-    selected_electrodes: list
-    selected_gas_lines: list
-    exclusive_interlock_enabled: bool
-    serial_port: str
-    ended_at: datetime.datetime = None
-    status: str = "running"
 
 # GUIの状態管理（IntVar を格納する辞書）
 elec_chk_vars = {} # 電極のチェックボックス状態 (0 or 1)
@@ -224,22 +210,6 @@ def finish_measurement_handler():
             pass
 
 
-def get_selected_electrodes():
-    selected = []
-    for name, var in elec_chk_vars.items():
-        if var.get():
-            selected.append(name)
-    return selected
-
-
-def get_selected_gas_lines():
-    selected = []
-    for name, var in gas_chk_vars.items():
-        if var.get():
-            selected.append(name)
-    return selected
-
-
 def show_start_dialog():
     if is_closing:
         return
@@ -324,8 +294,8 @@ def execute_start_measurement(filename, save_dir, target_cell):
             save_dir=save_dir,
             target_cell=target_cell,
             started_at=datetime.datetime.now(),
-            selected_electrodes=get_selected_electrodes(),
-            selected_gas_lines=get_selected_gas_lines(),
+            selected_electrodes=collect_selected_electrodes(elec_chk_vars),
+            selected_gas_lines=collect_selected_gas_lines(gas_chk_vars),
             exclusive_interlock_enabled=is_exclusive_interlock_enabled(),
             serial_port=config.serial_port,
         )
