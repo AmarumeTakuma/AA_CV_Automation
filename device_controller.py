@@ -117,7 +117,7 @@ class ArduinoDevice:
         print("Initializing devices... (Resetting all IO/Servo)")
         success = True
 
-        # 1. 電極をすべてOFF (0)
+        # 1. 電極をすべてOFF (電極リレーは active-high: 0=OFF, 1=ON)
         for pin in self.config.electrode_map.values():
             try:
                 self.send_command(f"DO,{pin},0\n")
@@ -161,7 +161,7 @@ class ArduinoDevice:
         return success
 
     def set_digital(self, pin, value):
-        """ 汎用デジタル出力 (main.pyから電極などを個別に操作する用) """
+        """ 汎用デジタル出力 (電極は 0=OFF / 1=ON、システム信号は各ピンの仕様に従う) """
         if pin < 0: return False
         return self.send_command(f"DO,{pin},{value}\n")
 

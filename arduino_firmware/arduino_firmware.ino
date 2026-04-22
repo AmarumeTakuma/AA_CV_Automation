@@ -98,9 +98,9 @@ void loop() {
 
 // 補助関数
 
-// ピンごとの安全停止レベルを返す
-// Active Low 系 (DI1/ESTOP) は HIGH が非発動、それ以外は LOW を安全側とする
 int getSafeOffLevel(int pin) {
+  // ピンごとの安全停止レベルを返す
+  // DI1/ESTOP は active-low なので HIGH が非発動、電極は active-high なので LOW が非発動
   if (pin == DI1_OUTPUT_PIN || pin == ESTOP_PIN) {
     return HIGH;
   }
@@ -166,14 +166,14 @@ bool checkInterlock(int targetPin) {
     int pinB = EXCLUSIVE_PAIRS[i][1];
     if (pinA == -1) continue;
 
-    // 自分がAで、相方のBが既にONならブロック
+    // 自分がAで、相方のBが既にONならブロック（電極は active-high なので HIGH が ON）
     if (targetPin == pinA) {
       if (digitalRead(pinB) == HIGH) {
         Serial.print("BLOCK: Pin "); Serial.print(pinA); Serial.print(" vs ON-Pin "); Serial.println(pinB);
         return false;
       }
     } 
-    // 自分がBで、相方のAが既にONならブロック
+    // 自分がBで、相方のAが既にONならブロック（電極は active-high なので HIGH が ON）
     else if (targetPin == pinB) {
       if (digitalRead(pinA) == HIGH) {
         Serial.print("BLOCK: Pin "); Serial.print(pinB); Serial.print(" vs ON-Pin "); Serial.println(pinA);
@@ -196,7 +196,9 @@ int getServoIndex(int pin) {
     servoCount++;
     return servoCount - 1;
   }
-  return -1; // 満員
+    int getSafeOffLevel(int pin) {
+      // ピンごとの安全停止レベルを返す
+      // DI1/ESTOP は active-low なので HIGH が非発動、電極は active-high なので LOW が非発動
 }
 
 // デジタル出力実行
@@ -213,7 +215,8 @@ void setDigitalPin(int pin, int value) {
   // 使用済みリストに登録（緊急停止機能用）
   bool found = false;
   for(int i=0; i<digitalPinCount; i++) {
-    if(activeDigitalPins[i] == pin) {
+      digitalWrite(pin, value);
+      // デジタル出力実行（電極は active-high: 0=OFF, 1=ON）
       found = true;
     }
   }

@@ -192,6 +192,7 @@ FAULT (致命的エラー)
 指定したセルの電極(WE/CE/RE)のみを回路に接続します。
 - **排他制御**: 同じ役割の電極が同時にONにならないよう、ソフトウェアおよびファームウェアレベルで二重に保護されています。
 - 操作は `operation_state == IDLE` かつ `device.is_connected` の場合のみ許可
+- 電極リレーの出力は **active-high** 前提です。`DO,pin,1` で ON、`DO,pin,0` で OFF になります。
 
 ### 3. ガスライン制御 (Servo Control)
 サーボモーターを指定角度に動かし、ガスの流路を切り替えます。
@@ -199,7 +200,8 @@ FAULT (致命的エラー)
 - 操作は `operation_state == IDLE` かつ `device.is_connected` の場合のみ許可
 
 ### 4. 安全な信号出力 (Active Low Safety)
-Start/EstopなどのActive Lowピンの初期化時における安全性を確保します。
+Start/Estopなどのシステム信号ピンの初期化時における安全性を確保します。
+- DI1 と E-STOP は **active-low** 前提です。
 - Arduino起動時の意図しないLow出力（誤トリガー）を防ぐため、`digitalWrite(HIGH)` してから `pinMode(OUTPUT)` に設定する安全な初期化順序を実装
 
 ### 5. ウォッチドッグタイマー (Watchdog Timer)
