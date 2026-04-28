@@ -101,7 +101,7 @@ pip install -r requirements.txt
 `settings.json` を開き、実験環境に合わせてピン配置を変更してください。
 *   **connection**: PCとの通信設定（COMポート、ボーレート）
 *   **pins**: システム制御ピン (Start triggers, Emergency Stop)
-    *   `start`: 測定開始トリガー (HZ-Proの **DI-1** へ接続)
+  *   `di1_output`: 測定開始トリガー (HZ-Proの **DI-1** へ接続)
     *   `estop`: 緊急停止トリガー (HZ-Proの **CELL-OPEN-IN** へ接続)
     *   `done`: 測定完了信号 (HZ-Proの **DO-1** から接続)
 *   **cells**: 各セル（Cell A, Cell B...）と電極(WE, CE, RE)のArduinoピン番号
@@ -123,6 +123,104 @@ pip install -r requirements.txt
 > | A3 | 17 |
 > | A4 | 18 |
 > | A5 | 19 |
+
+## main.py を実行すると何が起きるか（簡潔な実行フロー）
+
+- 起動時に `settings.json` を `ConfigManager` が読み込み・検証します。設定エラーがあればダイアログを表示して終了します。
+- Tkinter ウィンドウを作成し、`MainUI` によって GUI ウィジェットを構築します。
+- `ArduinoDevice` を `ConfigManager` と共に初期化し、100ms 後に `connect_app` が呼ばれて以下を実行します:
+  - シリアルポートの存在確認（ユーザに接続継続の可否を確認するプロンプトを表示する場合あり）
+  - Arduino への接続を確立し、`initialize_devices()` によって全ピンを安全側に初期化
+  - ファームウェア側の排他設定（インターロック）の有効化
+- 接続成功後、以下の定期処理が `root.after` で開始されます:
+  - ハートビート送信（ウォッチドッグ維持）
+  - 通信ウォッチドッグ（通信健全性監視）
+  - シリアル受信チェック（`MEASUREMENT_END` 等のイベント検知）
+- UI 操作例:
+  - `START` → 測定ダイアログを表示 → Arduinoへ DI1 パルス送信（測定開始） → UIロック → シリアルから `MEASUREMENT_END` を受信すると測定終了処理
+  - `E-STOP`（Esc or ボタン）→ Arduinoへ E-STOP パルス送信 → UIとデバイスを安全にリセット
+- 終了時は `on_close` でデバイス初期化とシリアルクローズを行い、アプリケーションを終了します。
+
+## 各ファイルの短い説明（補足）
+
+- `main.py`: アプリ起動、GUI 配線、グローバルな `RuntimeState` の初期化とイベントループ開始。
+- `app_ui.py`: `MainUI` クラス。Tkinter ウィジェットの構築と UI のレイアウト管理。
+- `config_manager.py`: `settings.json` の読み込み・検証・内部マップ（electrode_map, servo_map 等）生成。
+- `device_controller.py`: `ArduinoDevice` クラス。シリアル通信、コマンド送信、ハートビート、デバイス初期化。
+- `device_lifecycle.py`: 接続処理、ハートビートループ、受信チェック、初期化シーケンスの起動。
+- `error_handler.py`: 一度だけの自動リカバリ試行、リカバリ失敗時の FAULT 遷移と UI ロック。
+- `measurement_service.py`: `MeasurementSession` データ構造と選択収集ユーティリティ。
+- `measurement_workflow.py`: 測定の開始／終了フロー、測定ダイアログ、E-STOP と初期化のハンドラ。
+- `runtime_state.py`: `RuntimeState` と `OperationState` 列挙の定義。アプリ全体の共有状態を保持。
+- `selection_manager.py`: 電極 / ガスライン選択ロジック、排他制御、マスター選択処理。
+- `ui_utils.py`: ログ追加、UI のロック制御、状態遷移ユーティリティ群。
+- `update_config.py`: `settings.json` から `arduino_firmware/config.h` を生成するスクリプト（Arduino 側のホワイトリスト／インターロック生成）。
+- `arduino_firmware/arduino_firmware.ino`: Arduino 側ファームウェア。PC からのコマンド (`DO,SV,IL,HB`) を受け取り、ピン制御／サーボ制御／ウォッチドッグを実行。
+- `arduino_firmware/config.h`: `update_config.py` によって自動生成される Arduino 用設定ヘッダ（ピンのホワイトリスト／排他ペア／デフォルト角など）。
+- `settings.json`: ユーザが編集する主要な構成ファイル（COMポート、ピン割り当て、サーボ角、セーフティ設定など）。
+- `requirements.txt` / `pyproject.toml`: 依存パッケージ定義（`pyserial` など）。
+
+---
+
+## 実行例：はじめてアプリを起動する手順
+
+以下は本リポジトリをクローンし、PC と Arduino を接続したあとに行う基本的な手順です。まずは仮想環境を有効化し、依存パッケージをインストールしてください。
+
+```powershell
+# 仮想環境を有効化済みであることを想定
+pip install -r requirements.txt
+```
+
+1. `settings.json` を編集して、使用する `port`（例: COM3）やピン割り当てを環境に合わせて修正してください。
+2. Arduino 設定ヘッダを生成します（`arduino_firmware/config.h` が作成されます）。
+
+```powershell
+python update_config.py
+```
+
+3. `arduino_firmware/arduino_firmware.ino` を Arduino IDE で開き、ボード/ポートを選択してアップロードします。
+4. PC と Arduino を USB 接続してからアプリを起動します。
+
+```powershell
+python main.py
+```
+
+起動後はウィンドウ上の `START` / `E-STOP` や個別の電極・ガスラインチェックボックスを操作して機器を制御します。
+
+## `settings.json` の各項目の説明（例と注意点）
+
+このプロジェクトの動作は主に `settings.json` の内容によって決まります。以下に主要フィールドの意味と注意点をわかりやすくまとめます。
+
+- `connection`:
+  - `port`: Arduino が接続されるホスト側のポート名（Windows では `COM3` など）。正しくないと接続確認ダイアログが表示されます。
+  - `baudrate`: シリアル通信のボーレート。プロジェクトはデフォルトで `9600` を想定します。
+
+- `pins`:
+  - `di1_output`: 測定器への開始トリガ（Active‑Low の出力）。
+  - `estop`: 緊急停止信号（Active‑Low）。E‑STOP は Esc キーでも操作可能です。
+  - `done`: 測定完了を受け取る入力ピン（Arduino 側で監視され、LOW になったタイミングで `MEASUREMENT_END` が送信されます）。
+
+- `cells`:
+  - 各セルごとに必要な電極ピンを指定します。例: `"Cell A": {"WE": 2, "CE": 3, "RE": 4}`。
+  - `validation.required_electrodes`（デフォルトは `WE, CE, RE`）で必須電極を定義しています。欠落があると起動時にエラーとなります。
+
+- `servos`:
+  - 各ガスラインに対して `pin`, `on_angle`, `off_angle` を指定します。`group` を与えると同一グループ内での排他制御が働きます。
+  - `on_angle` と `off_angle` の差が小さすぎると物理的に切替が不安定になるので、`safety.min_angle_diff` を確認してください。
+
+- `safety`:
+  - `watchdog_timeout_ms`: ハートビートが途絶えたときに Arduino が強制停止するミリ秒値（デフォルト3000ms）。
+  - `prohibited_pins`: ファームウェアが使用を禁止するピン（例: 0/1 はシリアル、13 は LED）を列挙します。
+
+- `validation`:
+  - `required_electrodes`: 各セルに必須とする電極タイプ（例: `WE, CE, RE`）。設定ミスによる安全上の問題をここで検出します。
+
+- `system_limits`:
+  - `max_pin_number`, `max_servos`, `allowed_baudrates` 等、動作上の上限や許容値を指定します。
+
+注意: `settings.json` を変更したら必ず `python update_config.py` を実行して `arduino_firmware/config.h` を再生成し、Arduino スケッチを再アップロードしてください。ファームウェア側はホワイトリスト方式で安全ピンしか操作しないため、この同期が重要です。
+
+---
 
 ### Step 2: Arduino設定ファイルの生成（uv推奨） (`update_config.py`)
 `settings.json` の変更をArduino側に反映させるため、以下のスクリプトを実行します。
