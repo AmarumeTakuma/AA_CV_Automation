@@ -61,11 +61,11 @@ def on_elec_click(state, name, handle_device_comm_error, update_gui=True):
 
     try:
         selected = state.elec_chk_vars[name].get()
-        channel = state.config.pca_relay_map.get(name)
+        pin = state.config.electrode_map.get(name)
 
-        if channel is None:
+        if pin is None:
             error_msg = (
-                f"Config Error:\nElectrode '{name}' is not defined in pca_relay_map.\n"
+                f"Config Error:\nElectrode '{name}' is not defined in electrode_map.\n"
                 "Please check settings."
             )
             print(error_msg)
@@ -75,8 +75,8 @@ def on_elec_click(state, name, handle_device_comm_error, update_gui=True):
 
         if selected == 1:
             if is_exclusive_interlock_enabled(state):
-                exc_channel = state.config.reverse_elec_exclusive.get(name)
-                if not exc_channel:
+                channel = state.config.reverse_elec_exclusive.get(name)
+                if not channel:
                     error_msg = (
                         f"Config Error:\nElectrode '{name}' is not assigned to any exclusive channel.\n"
                         "Please check settings."
@@ -86,16 +86,16 @@ def on_elec_click(state, name, handle_device_comm_error, update_gui=True):
                     state.elec_chk_vars[name].set(0)
                     return
 
-                for other in state.config.elec_exclusive_channels.get(exc_channel, []):
+                for other in state.config.elec_exclusive_channels.get(channel, []):
                     if other != name and other in state.elec_chk_vars and state.elec_chk_vars[other].get():
-                        other_channel = state.config.pca_relay_map.get(other)
-                        if other_channel is not None:
+                        other_pin = state.config.electrode_map.get(other)
+                        if other_pin is not None:
                             state.elec_chk_vars[other].set(0)
-                            state.device.set_pca_relay(other_channel, 0)
+                            state.device.set_digital(other_pin, 0)
                             time.sleep(0.05)
-            state.device.set_pca_relay(channel, 1)
+            state.device.set_digital(pin, 1)
         else:
-            state.device.set_pca_relay(channel, 0)
+            state.device.set_digital(pin, 0)
 
         if update_gui:
             state.status_label.config(text=f"{name}: {'ON' if selected else 'OFF'}")
@@ -116,11 +116,11 @@ def on_gas_click(state, name, handle_device_comm_error, update_gui=True):
 
     try:
         selected = state.gas_chk_vars[name].get()
-        servo = state.config.pca_servo_map.get(name)
+        servo = state.config.servo_map.get(name)
 
         if not servo:
             error_msg = (
-                f"Config Error:\nGas line '{name}' is not defined in pca_servo_map.\n"
+                f"Config Error:\nGas line '{name}' is not defined in servo_map.\n"
                 "Please check settings."
             )
             print(error_msg)
@@ -136,13 +136,13 @@ def on_gas_click(state, name, handle_device_comm_error, update_gui=True):
                     for other in state.config.gas_exclusive_channels.get(channel, []):
                         if other != name and other in state.gas_chk_vars and state.gas_chk_vars[other].get():
                             state.gas_chk_vars[other].set(0)
-                            other_servo = state.config.pca_servo_map.get(other)
+                            other_servo = state.config.servo_map.get(other)
                             if other_servo:
-                                state.device.set_servo(other_servo["channel"], other_servo["off_angle"])
+                                state.device.set_servo(other_servo["pin"], other_servo["off_angle"])
                                 time.sleep(0.1)
-            state.device.set_servo(servo["channel"], servo["on_angle"])
+            state.device.set_servo(servo["pin"], servo["on_angle"])
         else:
-            state.device.set_servo(servo["channel"], servo["off_angle"])
+            state.device.set_servo(servo["pin"], servo["off_angle"])
 
         if update_gui and not state.is_closing:
             action_text = "Opened" if selected == 1 else "Closed"
@@ -158,26 +158,48 @@ def on_gas_click(state, name, handle_device_comm_error, update_gui=True):
 
 
 def on_toggle_exclusive(state, add_log, on_init_btn, handle_device_comm_error):
-    if not state.device.is_connected or state.is_closing or state.operation_state != OperationState.IDLE:
+    if state.is_closing or state.operation_state != OperationState.IDLE:
         return
 
     try:
         enabled = is_exclusive_interlock_enabled(state)
-        state.device.set_interlock_enabled(enabled)
-        
-        action_text = "Enabled" if enabled else "Disabled"
-        state.status_label.config(text=f"Exclusive Interlock: {action_text}")
-        add_log(f"Exclusive Interlock {action_text}.")
-        
-        # 排他制御が有効化された場合は初期化
-        if enabled:
+
+        if not enabled:
+            proceed = messagebox.askyesno(
+                "Disable Interlock",
+                "Exclusive interlock will be disabled.\n"
+                "This may allow conflicting outputs to be ON at the same time.\n\n"
+                "Do you want to continue?",
+            )
+            if not proceed:
+                if state.exclusive_var is not None:
+                    state.exclusive_var.set(1)
+                state.status_label.config(text="Exclusive interlock: ON")
+                add_log("Exclusive interlock disable canceled.")
+                return
+
+        if state.device and state.device.is_connected:
+            state.device.set_interlock_enabled(enabled)
+        state.status_label.config(text=f"Exclusive interlock: {'ON' if enabled else 'OFF'}")
+        add_log(f"Exclusive interlock switched {'ON' if enabled else 'OFF'}.")
+
+        if enabled and state.device and state.device.is_connected:
+            add_log("Exclusive interlock enabled. Running initialize.")
             on_init_btn()
     except (DeviceCommunicationError, DeviceTimeoutError) as err:
         handle_device_comm_error("on_toggle_exclusive", err)
-    except Exception as err:
-        print(f"Error in on_toggle_exclusive: {err}")
+    except Exception:
+        pass
 
 
 def on_panel_closing(state):
-    """Called when the UI panel is closing to save state if necessary."""
-    pass
+    """Show warning when closing Individual Controls panel while interlock is OFF."""
+    if state.is_closing or state.exclusive_var is None:
+        return
+
+    if state.exclusive_var.get() == 0:
+        messagebox.showinfo(
+            "Individual Controls Closing",
+            "Exclusive interlock is currently OFF.\n"
+            "Conflicting outputs may be active at the same time.",
+        )

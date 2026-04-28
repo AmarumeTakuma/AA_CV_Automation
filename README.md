@@ -24,10 +24,22 @@ AA_CV_Automation/
 ├── update_config.py             # Arduino用設定ヘッダ(config.h)生成スクリプト
 ├── requirements.txt             # 依存関係リスト（互換用）
 ├── README.md                    # 本ドキュメント
-└── arduino_firmware/            # Arduino用ファームウェアフォルダ
-    ├── arduino_firmware.ino     # Arduinoメインファームウェア
-    └── config.h                 # update_config.pyによって自動生成される設定ヘッダ（生成後）
+├── arduino_firmware/            # Arduino用ファームウェアフォルダ
+│   ├── arduino_firmware.ino     # Arduinoメインファームウェア
+│   └── config.h                 # update_config.pyによって自動生成される設定ヘッダ（生成後）
+├── arduino_tests/               # 診断用・安全確認用のArduinoスケッチ置き場
+│   └── pca9685_relay_safe/
+│       └── pca9685_relay_safe.ino
 ```
+
+### スケッチの役割分担
+
+このリポジトリでは、Arduino スケッチを用途ごとに分けて運用します。
+
+- `arduino_firmware/` は本番用です。`main.py` から送られるコマンドを受け取って、実験装置を制御します。
+- `arduino_tests/` は診断用です。PCA9685 や配線の動作確認をするための単独スケッチを置きます。
+- Arduino IDE では、**1つのスケッチフォルダだけを開いて使う**のが安全です。別フォルダの `.ino` を同じ場所に混在させないでください。
+- 本番用スケッチと診断用スケッチは、**役割もフォルダも完全に分離**しておくと、誤アップロードや混在コンパイルを避けやすくなります。
 
 ### Python モジュール設計
 
