@@ -34,6 +34,9 @@ void setup() {
 
   delay(500);
 
+  // I2C 初期化 (PCA9685 通信用)
+  Wire.begin();
+
   // オンボードLEDを出力に設定し、OFFにしておく
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
@@ -122,7 +125,8 @@ void setPCARelay(uint8_t channel, bool on) {
 }
 
 void setPCAServo(uint8_t channel, uint8_t angle) {
-  pca9685.setPWM(channel, 0, angleToPWM(angle));
+  uint16_t pwmValue = angleToPWM(angle);
+  pca9685.setPWM(channel, 0, pwmValue);
 }
 
 void initializeAllPCA() {

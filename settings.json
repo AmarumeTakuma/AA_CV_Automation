@@ -8,7 +8,7 @@
 
   "gpio_pins": {
     "di1_output": 11,
-    "estop": 12,
+    "estop": 14,
     "done": 19
   },
 
