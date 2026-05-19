@@ -113,9 +113,24 @@ pip install -r requirements.txt
 `settings.json` を開き、実験環境に合わせてピン配置を変更してください。
 *   **connection**: PCとの通信設定（COMポート、ボーレート）
 *   **pins**: システム制御ピン (Start triggers, Emergency Stop)
-  *   `di1_output`: 測定開始トリガー (HZ-Proの **DI-1** へ接続)
-    *   `estop`: 緊急停止トリガー (HZ-Proの **CELL-OPEN-IN** へ接続)
-    *   `done`: 測定完了信号 (HZ-Proの **DO-1** から接続)
+  *   `pins`: システム制御ピン (測定器との DI/DO, E-STOP 等)
+      - `di1_output`: 測定開始トリガー (HZ-Pro の **DI-1** へ接続、Active‑Low パルス)
+      - `di2_output`: 追加の測定トリガ出力（現状は下地実装、将来の拡張用）
+      - `cell_open_in`: HZ-Pro の **CELL-OPEN-IN**（E-STOP/セルオープン入力）。`estop` は本設定に吸収されています。
+      - `do1_input`: HZ-Pro の **DO-1**（測定完了入力）。`done` は本設定に吸収されています。DO1 の立下りで `MEASUREMENT_END` を送信します。
+      - `do2_input`: 追加のデジタル入力（下地実装、イベント通知あり）
+      - `hw_err_in`: ハードウェア異常検出入力（Hz‑Pro が異常検出時に 200ms 間 HIGH を出力します。基準は ISO‑GND）。
+
+      参考: このリポジトリのデフォルト割当例（`settings.json` に記載）:
+
+      - `di1_output`: 2
+      - `di2_output`: 3
+      - `cell_open_in`: 4
+      - `do1_input` (done): 5
+      - `do2_input`: 6
+      - `hw_err_in`: 7
+
+      注: ピン番号はボードごとに異なるため、使用するボードのデジタルピン番号で指定してください。変更後は必ず `python update_config.py` を実行して `arduino_firmware/config.h` を再生成し、スケッチを再アップロードしてください。
 *   **cells**: 各セル（Cell A, Cell B...）と電極(WE, CE, RE)のArduinoピン番号
 *   **servos**: ガスライン制御用サーボモーターのピン番号と角度設定
 *   **safety**: 安全設定・禁止ピン設定
@@ -207,10 +222,25 @@ python main.py
   - `port`: Arduino が接続されるホスト側のポート名（Windows では `COM3` など）。正しくないと接続確認ダイアログが表示されます。
   - `baudrate`: シリアル通信のボーレート。プロジェクトはデフォルトで `9600` を想定します。
 
-- `pins`:
-  - `di1_output`: 測定器への開始トリガ（Active‑Low の出力）。
-  - `estop`: 緊急停止信号（Active‑Low）。E‑STOP は Esc キーでも操作可能です。
-  - `done`: 測定完了を受け取る入力ピン（Arduino 側で監視され、LOW になったタイミングで `MEASUREMENT_END` が送信されます）。
+ - `pins`:
+  - `pins`: システム制御ピン (測定器との DI/DO, E-STOP 等)
+     - `di1_output`: 測定開始トリガー (HZ-Pro の DI-1 へ接続、Active‑Low パルス)
+     - `di2_output`: 追加の測定トリガ出力（現状は下地実装、将来の拡張用）
+     - `cell_open_in`: HZ-Pro の CELL-OPEN-IN（E-STOP/セルオープン入力）。`estop` は本設定に吸収されています。
+     - `do1_input`: HZ-Pro の DO-1（測定完了入力）。`done` は本設定に吸収されています。DO1 の立下りで `MEASUREMENT_END` を送信します。
+     - `do2_input`: 追加のデジタル入力（下地実装、イベント通知あり）
+     - `hw_err_in`: ハードウェア異常検出入力（Hz‑Pro が異常検出時に 200ms 間 HIGH を出力します。基準は ISO‑GND）。
+
+     参考: このリポジトリのデフォルト割当例（`settings.json` に記載）:
+
+     - `di1_output`: 2
+     - `di2_output`: 3
+     - `cell_open_in`: 4
+     - `do1_input` (done): 5
+     - `do2_input`: 6
+     - `hw_err_in`: 7
+
+     注: ピン番号はボードごとに異なるため、使用するボードのデジタルピン番号で指定してください。変更後は必ず `python update_config.py` を実行して `arduino_firmware/config.h` を再生成し、スケッチを再アップロードしてください。
 
 - `cells`:
   - 各セルごとに必要な電極ピンを指定します。例: `"Cell A": {"WE": 2, "CE": 3, "RE": 4}`。

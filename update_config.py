@@ -65,8 +65,19 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     # GPIO ピン
     gpio_conf = data.get("gpio_pins", {})
     pin_di1_output = gpio_conf.get("di1_output", -1)
+    pin_di2_output = gpio_conf.get("di2_output", -1)
     pin_estop = gpio_conf.get("estop", -1)
+    pin_cell_open = gpio_conf.get("cell_open_in", pin_estop)
+    # Absorb estop into cell_open_in
+    if pin_cell_open >= 0:
+        pin_estop = pin_cell_open
+    pin_do1 = gpio_conf.get("do1_input", -1)
+    pin_do2 = gpio_conf.get("do2_input", -1)
+    pin_hw_err = gpio_conf.get("hw_err_in", -1)
     pin_done = gpio_conf.get("done", -1)
+    # Absorb done into do1_input
+    if pin_do1 >= 0:
+        pin_done = pin_do1
 
     # PCA9685 ピン
     pca_conf = data.get("pca_relays", {})
@@ -83,8 +94,18 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     valid_gpio_pins = set()
     if pin_di1_output >= 0:
         valid_gpio_pins.add(pin_di1_output)
+    if pin_di2_output >= 0:
+        valid_gpio_pins.add(pin_di2_output)
     if pin_estop >= 0:
         valid_gpio_pins.add(pin_estop)
+    if pin_cell_open >= 0:
+        valid_gpio_pins.add(pin_cell_open)
+    if pin_do1 >= 0:
+        valid_gpio_pins.add(pin_do1)
+    if pin_do2 >= 0:
+        valid_gpio_pins.add(pin_do2)
+    if pin_hw_err >= 0:
+        valid_gpio_pins.add(pin_hw_err)
     if pin_done >= 0:
         valid_gpio_pins.add(pin_done)
 
@@ -140,8 +161,14 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     # GPIO ピン
     lines.append("// --- GPIO Control Pins (Hardware Assignment) ---")
     lines.append(f"const int DI1_OUTPUT_PIN = {pin_di1_output};")
+    lines.append(f"const int DI2_OUTPUT_PIN = {pin_di2_output};")
     lines.append(f"const int ESTOP_PIN = {pin_estop};")
+    lines.append(f"// cell open input (alias to ESTOP by default)")
+    lines.append(f"const int CELL_OPEN_PIN = {pin_cell_open};")
     lines.append(f"const int DONE_PIN = {pin_done};")
+    lines.append(f"const int DO1_PIN = {pin_do1};")
+    lines.append(f"const int DO2_PIN = {pin_do2};")
+    lines.append(f"const int HW_ERR_PIN = {pin_hw_err};")
     lines.append("")
 
     # GPIO ホワイトリスト

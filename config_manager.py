@@ -14,8 +14,13 @@ class ConfigManager:
 
         # GPIO ピン（Arduino 直結）
         self.di1_output_pin = -1
+        self.di2_output_pin = -1
         self.estop_pin = -1
+        self.cell_open_pin = -1
         self.done_pin = -1
+        self.do1_input_pin = -1
+        self.do2_input_pin = -1
+        self.hw_err_pin = -1
 
         # PCA9685 設定
         self.pca_address = 0x40
@@ -69,8 +74,15 @@ class ConfigManager:
             # GPIO Pins
             gpio = data.get("gpio_pins", {})
             self.di1_output_pin = gpio.get("di1_output", -1)
-            self.estop_pin = gpio.get("estop", -1)
-            self.done_pin = gpio.get("done", -1)
+            self.di2_output_pin = gpio.get("di2_output", -1)
+            # estop is absorbed into cell_open_in
+            self.cell_open_pin = gpio.get("cell_open_in", -1)
+            self.estop_pin = self.cell_open_pin
+            # done is absorbed into do1_input
+            self.do1_input_pin = gpio.get("do1_input", -1)
+            self.done_pin = self.do1_input_pin
+            self.do2_input_pin = gpio.get("do2_input", -1)
+            self.hw_err_pin = gpio.get("hw_err_in", -1)
 
             # PCA9685 Configuration
             pca_conf = data.get("pca9685", {})

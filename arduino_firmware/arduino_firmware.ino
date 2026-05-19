@@ -11,6 +11,9 @@ int gpioPinCount = 0;
 
 // 終了信号用
 int lastDoneState = HIGH;
+int lastDo1State = HIGH;
+int lastDo2State = HIGH;
+int lastHwErrState = LOW;
 
 // ウォッチドッグ用
 unsigned long lastHeartbeatTime = 0;
@@ -46,6 +49,16 @@ void setup() {
   // GPIO ピン初期化 (測定終了信号)
   if (DONE_PIN >= 0) {
     pinMode(DONE_PIN, INPUT_PULLUP);
+  }
+
+  if (DO1_PIN >= 0) {
+    pinMode(DO1_PIN, INPUT_PULLUP);
+  }
+  if (DO2_PIN >= 0) {
+    pinMode(DO2_PIN, INPUT_PULLUP);
+  }
+  if (HW_ERR_PIN >= 0) {
+    pinMode(HW_ERR_PIN, INPUT);
   }
 
   // GPIO システム制御ピン初期化
@@ -104,6 +117,37 @@ void loop() {
       delay(50);
     }
     lastDoneState = currentDoneState;
+  }
+
+  // DO1 (測定終了フラグとして扱う)
+  if (DO1_PIN >= 0) {
+    int currentDo1 = digitalRead(DO1_PIN);
+    if (lastDo1State == HIGH && currentDo1 == LOW) {
+      Serial.println("MEASUREMENT_END");
+      delay(20);
+    }
+    lastDo1State = currentDo1;
+  }
+
+  // DO2 (下地: 変化検出を通知)
+  if (DO2_PIN >= 0) {
+    int currentDo2 = digitalRead(DO2_PIN);
+    if (currentDo2 != lastDo2State) {
+      Serial.print("DO2,EVENT,");
+      Serial.println(currentDo2);
+      lastDo2State = currentDo2;
+    }
+  }
+
+  // HW Error 出力の監視 (Hz-Proが200ms間 HIGH を出す)
+  if (HW_ERR_PIN >= 0) {
+    int currentHw = digitalRead(HW_ERR_PIN);
+    if (currentHw != lastHwErrState) {
+      // 立ち上がり/立ち下がりを通知
+      Serial.print("HW_ERR,");
+      Serial.println(currentHw == HIGH ? "1" : "0");
+      lastHwErrState = currentHw;
+    }
   }
 }
 

@@ -161,6 +161,10 @@ class ArduinoDevice:
             return False
         return self.send_command(f"GPIO,SET,{pin},{value},\n")
 
+    def set_digital(self, pin, value):
+        """後方互換用: デジタル出力設定 (古い API を呼ぶコード向け)"""
+        return self.set_gpio(pin, value)
+
     def pulse_gpio(self, pin, duration_ms):
         """ GPIO ピンにパルスを送る """
         if pin < 0:
@@ -188,6 +192,15 @@ class ArduinoDevice:
         pulse_ms = int(pulse_duration * 1000)
         return self.pulse_gpio(pin, pulse_ms)
 
+    def trigger_di2(self, pulse_duration=0.5):
+        """ DI2 Outputピンにパルスを送る (下地実装) """
+        pin = getattr(self.config, 'di2_output_pin', -1)
+        if pin < 0:
+            return False
+
+        pulse_ms = int(pulse_duration * 1000)
+        return self.pulse_gpio(pin, pulse_ms)
+
     def start_measurement(self, pulse_duration=0.5):
         """ 測定開始トリガーを送る (DI1 パルス) """
         return self.trigger_di1(pulse_duration)
@@ -198,6 +211,13 @@ class ArduinoDevice:
         if pin < 0:
             return False
         return self.set_gpio(pin, 1)  # HIGH (OFF, Active Low)
+
+    def stop_di2(self):
+        """ DI2 を待機状態 (HIGH, Active Low) に戻す """
+        pin = getattr(self.config, 'di2_output_pin', -1)
+        if pin < 0:
+            return False
+        return self.set_gpio(pin, 1)
 
     def trigger_estop(self, pulse_duration=0.5):
         """ 緊急停止トリガーを送る (E-STOP パルス) """
