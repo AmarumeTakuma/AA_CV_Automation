@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
+from measurement_file_service import create_measurement_output_file
 from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
 from runtime_state import OperationState
 from selection_manager import is_exclusive_interlock_enabled
@@ -60,6 +61,16 @@ def execute_start_measurement(state, filename, save_dir, target_cell, add_log, h
 
         if state.device.start_measurement():
             print("Measurement STARTED. (UI Locked)")
+            output_path = create_measurement_output_file(
+                save_dir=save_dir,
+                filename=filename,
+                target_cell=target_cell,
+                selected_electrodes=state.current_measurement.selected_electrodes,
+                selected_gas_lines=state.current_measurement.selected_gas_lines,
+                exclusive_interlock_enabled=state.current_measurement.exclusive_interlock_enabled,
+                serial_port=state.current_measurement.serial_port,
+            )
+            add_log(f"Measurement file created: {output_path}")
             state.start_btn.config(relief=tk.SUNKEN)
             state.root.update()
             toggle_ui_lock(state, True)

@@ -5,5 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "pyautogui>=0.9.54",
+    "pyperclip>=1.11.0",
     "pyserial>=3.5",
+    "pywin32>=311",
 ]

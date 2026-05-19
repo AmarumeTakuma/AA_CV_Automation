@@ -1,1 +1,4 @@
 pyserial
+pyautogui
+pyperclip
+pywin32
