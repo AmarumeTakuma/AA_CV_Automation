@@ -2,7 +2,7 @@
   "_comment": "=== USER CONFIGURATION (実験に合わせて編集してください) ===",
 
   "connection": {
-    "port": "COM3",
+    "port": "COM5",
     "baudrate": 9600
   },
 
@@ -22,15 +22,15 @@
 
   "pca_relays": {
     "Cell A": {"WE": 0, "CE": 1, "RE": 2},
-    "Cell B": {"WE": 3, "CE": 4, "RE": 5},
-    "Cell C": {"WE": 6, "CE": 7, "RE": 8}
+    "Cell B": {"WE": 4, "CE": 5, "RE": 6},
+    "Cell C": {"WE": 8, "CE": 9, "RE": 10}
   },
 
   "pca_servos": {
-    "Gas Line A": {"channel": 9, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Line B": {"channel": 10, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Line C": {"channel": 11, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Purge":  {"channel": 12, "on_angle": 90, "off_angle": 0}
+    "Gas Line A": {"channel": 12, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
+    "Gas Line B": {"channel": 13, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
+    "Gas Line C": {"channel": 14, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
+    "Gas Purge":  {"channel": 15, "on_angle": 90, "off_angle": 0}
   },
 
   "_separator": "=======================================================",

@@ -18,6 +18,8 @@ class MeasurementSession:
     selected_gas_lines: list
     exclusive_interlock_enabled: bool
     serial_port: str
+    protocol_name: str = "CV"
+    automation_plan_name: str = ""
     ended_at: datetime.datetime = None
     status: str = "running"
 
@@ -38,6 +40,8 @@ class MeasurementSession:
             "filename": self.filename,
             "save_dir": self.save_dir,
             "target_cell": self.target_cell,
+            "protocol_name": self.protocol_name,
+            "automation_plan_name": self.automation_plan_name,
             "started_at": self.started_at.isoformat(),
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
             "duration_sec": self.duration_seconds(),

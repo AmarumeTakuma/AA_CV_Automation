@@ -257,6 +257,12 @@ python main.py
 - `validation`:
   - `required_electrodes`: 各セルに必須とする電極タイプ（例: `WE, CE, RE`）。設定ミスによる安全上の問題をここで検出します。
 
+- `measurement_prestart`:
+  - 測定開始前に pyautogui で操作する手順を設定する拡張ポイントです。
+  - `plan_name`: 手順セットの名前。
+  - `steps`: `hotkey` / `press` / `write_text` / `paste_text` / `click` / `wait` / `focus_window` / `open_path` などのステップ配列。
+  - まだ具体化されていない操作は `enabled: false` のまま置いておき、座標やホットキーが確定したら設定側で埋める運用にします。
+
 - `system_limits`:
   - `max_pin_number`, `max_servos`, `allowed_baudrates` 等、動作上の上限や許容値を指定します。
 

@@ -1,12 +1,13 @@
 import datetime
-import os
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
 from measurement_file_service import create_measurement_output_file
+from measurement_prestart_automation import run_prestart_automation
 from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
+from measurement_prestart_automation import show_start_dialog
 from runtime_state import OperationState
 from selection_manager import is_exclusive_interlock_enabled
 from ui_utils import init_gui_vars, reset_ui_state, toggle_ui_lock, set_operation_state, can_start_measurement, can_estop
@@ -49,6 +50,7 @@ def execute_start_measurement(state, filename, save_dir, target_cell, add_log, h
             filename=filename,
             save_dir=save_dir,
             target_cell=target_cell,
+            protocol_name="CV",
             started_at=datetime.datetime.now(),
             selected_electrodes=collect_selected_electrodes(state.elec_chk_vars),
             selected_gas_lines=collect_selected_gas_lines(state.gas_chk_vars),
@@ -58,6 +60,12 @@ def execute_start_measurement(state, filename, save_dir, target_cell, add_log, h
         state.measurement_history.append(state.current_measurement)
 
         add_log(f"Measurement start request: {target_cell} (save: {save_dir}/{filename})")
+
+        prestart_result = run_prestart_automation(state, state.current_measurement, add_log)
+        state.current_measurement.automation_plan_name = prestart_result.plan_name
+        if not prestart_result.success:
+            set_operation_state(state, OperationState.IDLE, add_log)
+            return
 
         if state.device.start_measurement():
             print("Measurement STARTED. (UI Locked)")
@@ -92,78 +100,6 @@ def execute_start_measurement(state, filename, save_dir, target_cell, add_log, h
         set_operation_state(state, OperationState.IDLE, add_log)
 
 
-def show_start_dialog(state, add_log, handle_device_comm_error):
-    if state.is_closing:
-        return
-
-    dialog = tk.Toplevel(state.root)
-    dialog.title("Measurement Setup")
-    dialog.geometry("420x300")
-    dialog.transient(state.root)
-    dialog.grab_set()
-
-    tk.Label(dialog, text="File name", font=("Arial", 10, "bold")).pack(pady=(15, 0))
-    fname_frame = tk.Frame(dialog)
-    fname_frame.pack()
-
-    default_name = f"measurement_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    file_name_var = tk.StringVar(value=default_name)
-    tk.Entry(fname_frame, textvariable=file_name_var, width=28).pack(side=tk.LEFT)
-    tk.Label(fname_frame, text=".csv").pack(side=tk.LEFT)
-
-    tk.Label(dialog, text="Save directory", font=("Arial", 10, "bold")).pack(pady=(10, 0))
-    dir_frame = tk.Frame(dialog)
-    dir_frame.pack()
-    save_dir_var = tk.StringVar(value=os.getcwd())
-    tk.Entry(dir_frame, textvariable=save_dir_var, width=28).pack(side=tk.LEFT)
-
-    def browse_dir():
-        chosen = filedialog.askdirectory(initialdir=save_dir_var.get())
-        if chosen:
-            save_dir_var.set(chosen)
-
-    tk.Button(dir_frame, text="Browse...", command=browse_dir).pack(side=tk.LEFT, padx=5)
-
-    tk.Label(dialog, text="Target cell", font=("Arial", 10, "bold")).pack(pady=(10, 0))
-    cell_var = tk.StringVar()
-    cells = list(state.config.cells_and_electrodes.keys())
-    cell_combo = ttk.Combobox(dialog, textvariable=cell_var, values=cells, state="readonly", width=18)
-    if cells:
-        cell_combo.current(0)
-    cell_combo.pack()
-
-    btn_frame = tk.Frame(dialog)
-    btn_frame.pack(pady=20)
-
-    def on_confirm():
-        filename_base = file_name_var.get().strip()
-        save_dir = save_dir_var.get().strip()
-        target_cell = cell_var.get().strip()
-
-        if not filename_base:
-            messagebox.showwarning("Input Error", "File name is required.")
-            return
-        if not save_dir:
-            messagebox.showwarning("Input Error", "Save directory is required.")
-            return
-        if not target_cell:
-            messagebox.showwarning("Input Error", "Target cell is required.")
-            return
-
-        dialog.destroy()
-        execute_start_measurement(
-            state=state,
-            filename=f"{filename_base}.csv",
-            save_dir=save_dir,
-            target_cell=target_cell,
-            add_log=add_log,
-            handle_device_comm_error=handle_device_comm_error,
-        )
-
-    tk.Button(btn_frame, text="Start", command=on_confirm, bg="#ccffcc", width=14).pack(side=tk.LEFT, padx=8)
-    tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=8)
-
-
 def on_start(state, add_log, handle_device_comm_error):
     if not state.device.is_connected or state.is_closing:
         return
@@ -171,7 +107,7 @@ def on_start(state, add_log, handle_device_comm_error):
         messagebox.showinfo("Info", "DI1 Output Pin Disabled")
         return
 
-    show_start_dialog(state, add_log, handle_device_comm_error)
+    show_start_dialog(state, add_log, handle_device_comm_error, execute_start_measurement)
 
 
 def on_estop(state, add_log, handle_device_comm_error):

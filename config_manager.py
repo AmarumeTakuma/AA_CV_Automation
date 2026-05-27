@@ -99,6 +99,9 @@ class ConfigManager:
             self.watchdog_timeout = safe.get("watchdog_timeout_ms", 3000)
             self.heartbeat_interval = max(100, int(self.watchdog_timeout / 3))
 
+            # Measurement automation settings
+            self.measurement_prestart = data.get("measurement_prestart", {})
+
             # Validation Settings
             val = data.get("validation", {})
             self.required_electrodes = set(val.get("required_electrodes", ["WE", "CE", "RE"]))
