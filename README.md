@@ -168,6 +168,42 @@ pip install -r requirements.txt
   - `E-STOP`（Esc or ボタン）→ Arduinoへ E-STOP パルス送信 → UIとデバイスを安全にリセット
 - 終了時は `on_close` でデバイス初期化とシリアルクローズを行い、アプリケーションを終了します。
 
+## 測定開始ロジック（現状の詳細）
+
+`START` 押下時の処理は、現在次の順序で動作します。
+
+1. `app_ui.py` の `START` ボタンが `on_start` コールバックを呼びます。
+2. `measurement_workflow.on_start()` で開始前ガードを実施します。
+  - デバイス未接続、またはアプリ終了中なら何もしません。
+  - `di1_output_pin < 0`（無効設定）の場合は情報ダイアログを表示して終了します。
+3. `measurement_prestart_automation.show_start_dialog()` が表示され、以下の入力を受け取ります。
+  - ファイル名（拡張子 `.csv` は内部で付与）
+  - 保存フォルダ
+  - ターゲットセル
+4. ダイアログの `Start` 確定後、`measurement_workflow.execute_start_measurement()` が実行されます。
+  - `can_start_measurement()` により「IDLE かつ接続済みかつ終了中でないこと」を確認。
+  - 状態を `MEASURING` に遷移。
+  - `MeasurementSession` を生成し、選択済み電極/ガスライン、排他設定、COMポート等をスナップショット保存。
+  - `run_prestart_automation()` を実行（`settings.json` の `measurement_prestart.steps` ベース）。
+  - prestart が失敗した場合は `IDLE` に戻して終了。
+5. prestart 成功後、`device.start_measurement()` で DI1 パルス（Active-Low）を Arduino に送信します。
+6. DI1 トリガ送信成功時のみ、`measurement_file_service.create_measurement_output_file()` で CSV を即時作成します。
+  - `measurement_start`, `target_cell`, `save_dir` などのメタデータ行を書き込み。
+7. UIを測定中表示に切り替えます。
+  - STARTボタンを押下状態へ変更。
+  - E-STOP 以外をロック。
+  - ステータス更新とログ追記。
+8. 以後、`device_lifecycle.check_incoming_data()` がシリアル受信を監視し、`MEASUREMENT_END` を受信したら `finish_measurement_handler()` を呼びます。
+9. `finish_measurement_handler()` は測定終了処理を実施します。
+  - `device.stop_measurement()` で DI1 を待機状態（HIGH）へ戻す。
+  - 測定セッションを completed に更新。
+  - 状態を `IDLE` に戻し、UIロック解除。
+
+補足:
+
+- `RuntimeState` に `start_cooldown_sec` はありますが、現行の `START` 経路ではクールダウン判定には使っていません。
+- CSVファイルは「測定トリガ成功後」に作成されるため、prestart 失敗時や DI1 送信失敗時には作成されません。
+
 ## 各ファイルの短い説明（補足）
 
 - `main.py`: アプリ起動、GUI 配線、グローバルな `RuntimeState` の初期化とイベントループ開始。
