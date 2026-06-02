@@ -9,4 +9,5 @@ dependencies = [
     "pyperclip>=1.11.0",
     "pyserial>=3.5",
     "pywin32>=311",
+    "stationkit @ file:///c:/Users/tkm-a/Downloads/stationkit-main/stationkit-main",
 ]

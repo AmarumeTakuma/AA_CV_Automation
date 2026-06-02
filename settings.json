@@ -27,10 +27,10 @@
   },
 
   "pca_servos": {
-    "Gas Line A": {"channel": 12, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Line B": {"channel": 13, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Line C": {"channel": 14, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Purge":  {"channel": 15, "on_angle": 90, "off_angle": 0}
+    "Gas Line A": {"channel": 12, "on_angle": 70, "off_angle": 20, "group": "Gas Channel"},
+    "Gas Line B": {"channel": 13, "on_angle": 70, "off_angle": 20, "group": "Gas Channel"},
+    "Gas Line C": {"channel": 14, "on_angle": 70, "off_angle": 20, "group": "Gas Channel"},
+    "Gas Purge":  {"channel": 15, "on_angle": 70, "off_angle": 20}
   },
 
   "_separator": "=======================================================",

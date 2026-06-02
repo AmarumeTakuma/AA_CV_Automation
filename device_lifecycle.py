@@ -2,8 +2,6 @@ from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
 from runtime_state import OperationState
-from selection_manager import is_exclusive_interlock_enabled
-from ui_utils import reset_ui_state
 
 
 def send_heartbeat_loop(state):
@@ -85,45 +83,11 @@ def connect_app(state, add_log, handle_device_comm_error, finish_measurement_han
             return
 
     try:
-        if not state.device.connect():
-            state.status_label.config(text="Connection failed.")
-            add_log("Connection failed.")
-            return
-    except DeviceCommunicationError as err:
-        print(f"Connection Error: {err}")
-        if not state.is_closing:
-            messagebox.showerror("Connection Error", str(err))
-            state.root.destroy()
-        return
+        state.stationkit_controller.connect(state.config.serial_port)
 
-    state.status_label.config(text=f"Connected to {state.config.serial_port}. Initializing...")
-    add_log(f"Connected to {state.config.serial_port}. Initializing...")
-    state.root.update()
-
-    if state.is_closing:
-        return
-
-    try:
-        if state.device.initialize_devices():
-            print("Initialization successful. Connected and Ready.")
-            try:
-                state.device.set_interlock_enabled(is_exclusive_interlock_enabled(state))
-                if state.root.winfo_exists():
-                    state.status_label.config(text="Connected and Ready.")
-                    add_log("Initialization completed. Connected and Ready.")
-                    reset_ui_state(state)
-            except Exception:
-                pass
-
-            check_incoming_data(state, finish_measurement_handler)
-            send_heartbeat_loop(state)
-            comm_watchdog_loop(state, handle_device_comm_error)
-        else:
-            print("Initialization Error: Device initialization failed.")
-            add_log("Initialization failed.")
-            if not state.is_closing:
-                messagebox.showerror("Error", "Initialization failed.")
-                state.root.destroy()
+        check_incoming_data(state, finish_measurement_handler)
+        send_heartbeat_loop(state)
+        comm_watchdog_loop(state, handle_device_comm_error)
     except (DeviceCommunicationError, DeviceTimeoutError) as err:
         print(f"Initialization Error: {err}")
         if not state.is_closing:

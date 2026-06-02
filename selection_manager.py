@@ -2,6 +2,7 @@ import time
 from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
+from stationkit_measurement_controller import StationChangeTarget
 from runtime_state import OperationState
 
 
@@ -91,11 +92,17 @@ def on_elec_click(state, name, handle_device_comm_error, update_gui=True):
                         other_channel = state.config.pca_relay_map.get(other)
                         if other_channel is not None:
                             state.elec_chk_vars[other].set(0)
-                            state.device.set_pca_relay(other_channel, 0)
+                            state.stationkit_controller.change(
+                                StationChangeTarget(kind="electrode", name=other, selected=False)
+                            )
                             time.sleep(0.05)
-            state.device.set_pca_relay(channel, 1)
+            state.stationkit_controller.change(
+                StationChangeTarget(kind="electrode", name=name, selected=True)
+            )
         else:
-            state.device.set_pca_relay(channel, 0)
+            state.stationkit_controller.change(
+                StationChangeTarget(kind="electrode", name=name, selected=False)
+            )
 
         if update_gui:
             state.status_label.config(text=f"{name}: {'ON' if selected else 'OFF'}")
@@ -138,11 +145,17 @@ def on_gas_click(state, name, handle_device_comm_error, update_gui=True):
                             state.gas_chk_vars[other].set(0)
                             other_servo = state.config.pca_servo_map.get(other)
                             if other_servo:
-                                state.device.set_servo(other_servo["channel"], other_servo["off_angle"])
+                                state.stationkit_controller.change(
+                                    StationChangeTarget(kind="gas", name=other, selected=False)
+                                )
                                 time.sleep(0.1)
-            state.device.set_servo(servo["channel"], servo["on_angle"])
+            state.stationkit_controller.change(
+                StationChangeTarget(kind="gas", name=name, selected=True)
+            )
         else:
-            state.device.set_servo(servo["channel"], servo["off_angle"])
+            state.stationkit_controller.change(
+                StationChangeTarget(kind="gas", name=name, selected=False)
+            )
 
         if update_gui and not state.is_closing:
             action_text = "Opened" if selected == 1 else "Closed"
@@ -163,7 +176,7 @@ def on_toggle_exclusive(state, add_log, on_init_btn, handle_device_comm_error):
 
     try:
         enabled = is_exclusive_interlock_enabled(state)
-        state.device.set_interlock_enabled(enabled)
+        state.stationkit_controller.set_interlock(enabled)
         
         action_text = "Enabled" if enabled else "Disabled"
         state.status_label.config(text=f"Exclusive Interlock: {action_text}")

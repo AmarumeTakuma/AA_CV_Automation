@@ -4,12 +4,9 @@ import tkinter as tk
 from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
-from measurement_file_service import create_measurement_output_file
-from measurement_prestart_automation import run_prestart_automation
-from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
 from measurement_prestart_automation import show_start_dialog
+from stationkit_measurement_controller import MeasurementExecuteRequest
 from runtime_state import OperationState
-from selection_manager import is_exclusive_interlock_enabled
 from ui_utils import init_gui_vars, reset_ui_state, toggle_ui_lock, set_operation_state, can_start_measurement, can_estop
 
 
@@ -42,51 +39,14 @@ def execute_start_measurement(state, filename, save_dir, target_cell, add_log, h
     if not can_start_measurement(state):
         return
 
-    # Transition to MEASURING state
-    set_operation_state(state, OperationState.MEASURING, add_log)
-
     try:
-        state.current_measurement = MeasurementSession(
-            filename=filename,
-            save_dir=save_dir,
-            target_cell=target_cell,
-            protocol_name="CV",
-            started_at=datetime.datetime.now(),
-            selected_electrodes=collect_selected_electrodes(state.elec_chk_vars),
-            selected_gas_lines=collect_selected_gas_lines(state.gas_chk_vars),
-            exclusive_interlock_enabled=is_exclusive_interlock_enabled(state),
-            serial_port=state.config.serial_port,
-        )
-        state.measurement_history.append(state.current_measurement)
-
-        add_log(f"Measurement start request: {target_cell} (save: {save_dir}/{filename})")
-
-        prestart_result = run_prestart_automation(state, state.current_measurement, add_log)
-        state.current_measurement.automation_plan_name = prestart_result.plan_name
-        if not prestart_result.success:
-            set_operation_state(state, OperationState.IDLE, add_log)
-            return
-
-        if state.device.start_measurement():
-            print("Measurement STARTED. (UI Locked)")
-            output_path = create_measurement_output_file(
-                save_dir=save_dir,
+        state.stationkit_controller.execute(
+            MeasurementExecuteRequest(
                 filename=filename,
+                save_dir=save_dir,
                 target_cell=target_cell,
-                selected_electrodes=state.current_measurement.selected_electrodes,
-                selected_gas_lines=state.current_measurement.selected_gas_lines,
-                exclusive_interlock_enabled=state.current_measurement.exclusive_interlock_enabled,
-                serial_port=state.current_measurement.serial_port,
             )
-            add_log(f"Measurement file created: {output_path}")
-            state.start_btn.config(relief=tk.SUNKEN)
-            state.root.update()
-            toggle_ui_lock(state, True)
-            state.status_label.config(text=f"Measurement STARTED: {target_cell}")
-            add_log("Measurement started.")
-            state.last_start_time = time.monotonic()
-        else:
-            set_operation_state(state, OperationState.IDLE, add_log)
+        )
     except DeviceCommunicationError as err:
         set_operation_state(state, OperationState.IDLE, add_log)
         handle_device_comm_error("execute_start_measurement", err)
@@ -169,29 +129,26 @@ def on_init_btn(state, add_log, handle_device_comm_error):
     print("Manual initialization requested.")
     add_log("Manual initialization requested.")
     try:
-        if state.device.initialize_devices():
-            try:
-                init_gui_vars(state)
+        state.stationkit_controller.initialize_all()
+        try:
+            init_gui_vars(state)
 
-                if state.root.winfo_exists():
-                    if state.start_btn:
-                        state.start_btn.config(relief=tk.RAISED)
-                    if state.di1_btn:
-                        state.di1_btn.config(relief=tk.RAISED)
-                    if state.estop_btn:
-                        state.estop_btn.config(fg="black", bg="#ffcccc")
-                    state.estop_var.set(0)
-                    if state.exclusive_var:
-                        state.exclusive_var.set(1)
-                    state.status_label.config(text="Initialized.")
-                    add_log("Manual initialization completed.")
+            if state.root.winfo_exists():
+                if state.start_btn:
+                    state.start_btn.config(relief=tk.RAISED)
+                if state.di1_btn:
+                    state.di1_btn.config(relief=tk.RAISED)
+                if state.estop_btn:
+                    state.estop_btn.config(fg="black", bg="#ffcccc")
+                state.estop_var.set(0)
+                if state.exclusive_var:
+                    state.exclusive_var.set(1)
+                state.status_label.config(text="Initialized.")
+                add_log("Manual initialization completed.")
 
-                reset_ui_state(state)
-            except tk.TclError:
-                pass
-        else:
-            if not state.is_closing:
-                messagebox.showerror("Error", "Initialization failed.")
+            reset_ui_state(state)
+        except tk.TclError:
+            pass
     except DeviceCommunicationError as err:
         handle_device_comm_error("on_init_btn", err)
     except DeviceTimeoutError as err:
@@ -207,8 +164,7 @@ def on_close(state, add_log):
     set_operation_state(state, OperationState.STOPPED, add_log)
 
     try:
-        if state.device:
-            state.device.close()
+        state.stationkit_controller.disconnect_now()
     except Exception as err:
         print(f"Error closing device: {err}")
 

@@ -178,6 +178,15 @@ void initializeAllPCA() {
   for (uint8_t i = 0; i < 16; i++) {
     pca9685.setPWM(i, 0, PWM_FULL_OFF);
   }
+
+  // サーボは設定済みのデフォルト角度へ戻す
+  for (int i = 0; i < SERVO_COUNT_DEF; i++) {
+    int channel = SERVO_DEFAULTS[i][0];
+    int angle = SERVO_DEFAULTS[i][1];
+    if (channel >= 0 && channel < 16) {
+      setPCAServo((uint8_t)channel, (uint8_t)angle);
+    }
+  }
 }
 
 // ============================================
