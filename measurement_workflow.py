@@ -15,7 +15,15 @@ def finish_measurement_handler(state, add_log):
         return
 
     try:
-        state.device.stop_measurement()
+        # Use stationkit controller API instead of direct device call
+        if state.stationkit_controller:
+            try:
+                state.stationkit_controller.stop_measurement()
+            except Exception:
+                # Fallback to direct device call if controller stop fails
+                state.device.stop_measurement()
+        else:
+            state.device.stop_measurement()
     except Exception as err:
         print(f"Error in finish_measurement_handler: {err}")
     finally:
