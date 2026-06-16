@@ -4,7 +4,7 @@ import time
 import datetime
 import os
 
-def auto_save_result(base_folder, file_prefix, ext=".csv"):
+def auto_save_result(base_folder, file_prefix, ext=".act"):
     """保存ウィンドウが出たあとに、ファイル名を入力して保存する処理
 
     ext: 拡張子文字列（例 ".csv" または "txt"）。ドットがなければ補われますn

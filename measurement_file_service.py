@@ -1,7 +1,7 @@
 """Helpers for creating measurement output files.
 
 This module keeps the start flow simple: once the user selects a file name
-and save directory, the app can create the target CSV file immediately.
+and save directory, the app can create the target act file immediately.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def create_measurement_output_file(
     exclusive_interlock_enabled: bool | None = None,
     serial_port: str | None = None,
 ) -> Path:
-    """Create the measurement CSV file with a small metadata header.
+    """Create the measurement .act file with a small metadata header.
 
     The file is created immediately so the chosen name and folder exist
     as soon as the measurement starts.
