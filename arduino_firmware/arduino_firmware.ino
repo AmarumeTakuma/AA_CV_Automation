@@ -13,7 +13,7 @@ int gpioPinCount = 0;
 int lastDoneState = HIGH;
 int lastDo1State = HIGH;
 int lastDo2State = HIGH;
-int lastHwErrState = LOW;
+int lastHwErrState = HIGH;
 
 // ウォッチドッグ用
 unsigned long lastHeartbeatTime = 0;
@@ -58,7 +58,7 @@ void setup() {
     pinMode(DO2_PIN, INPUT_PULLUP);
   }
   if (HW_ERR_PIN >= 0) {
-    pinMode(HW_ERR_PIN, INPUT);
+    pinMode(HW_ERR_PIN, INPUT_PULLUP);
   }
 
   // GPIO システム制御ピン初期化
@@ -139,13 +139,13 @@ void loop() {
     }
   }
 
-  // HW Error 出力の監視 (Hz-Proが200ms間 HIGH を出す)
+// HW Error 出力の監視 (Hz-Proが200ms間 LOW(GND) に落とす)
   if (HW_ERR_PIN >= 0) {
     int currentHw = digitalRead(HW_ERR_PIN);
     if (currentHw != lastHwErrState) {
-      // 立ち上がり/立ち下がりを通知
       Serial.print("HW_ERR,");
-      Serial.println(currentHw == HIGH ? "1" : "0");
+      // ▼変更：LOWになったら"1"(エラーON)、HIGHに戻ったら"0"(エラーOFF)を送信
+      Serial.println(currentHw == LOW ? "1" : "0"); 
       lastHwErrState = currentHw;
     }
   }
