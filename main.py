@@ -12,6 +12,7 @@ from measurement_workflow import on_close as on_close_impl
 from measurement_workflow import on_estop as on_estop_impl
 from measurement_workflow import on_init_btn as on_init_btn_impl
 from measurement_workflow import on_start as on_start_impl
+from stationkit_measurement_controller import MeasurementStationController
 from runtime_state import RuntimeState
 from selection_manager import on_elec_click as on_elec_click_impl
 from selection_manager import on_gas_click as on_gas_click_impl
@@ -96,6 +97,8 @@ if __name__ == "__main__":
         print(f"[Fatal Error] {err}")
         messagebox.showerror("Initialization Error", str(err))
         sys.exit(1)
+
+    state.stationkit_controller = MeasurementStationController(state, add_log, handle_device_comm_error)
 
     ui = MainUI(
         root,

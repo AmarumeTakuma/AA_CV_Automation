@@ -177,7 +177,7 @@ pip install -r requirements.txt
   - デバイス未接続、またはアプリ終了中なら何もしません。
   - `di1_output_pin < 0`（無効設定）の場合は情報ダイアログを表示して終了します。
 3. `measurement_prestart_automation.show_start_dialog()` が表示され、以下の入力を受け取ります。
-  - ファイル名（拡張子 `.csv` は内部で付与）
+  - ファイル名（拡張子 `.act` は内部で付与）
   - 保存フォルダ
   - ターゲットセル
 4. ダイアログの `Start` 確定後、`measurement_workflow.execute_start_measurement()` が実行されます。
@@ -187,7 +187,7 @@ pip install -r requirements.txt
   - `run_prestart_automation()` を実行（`settings.json` の `measurement_prestart.steps` ベース）。
   - prestart が失敗した場合は `IDLE` に戻して終了。
 5. prestart 成功後、`device.start_measurement()` で DI1 パルス（Active-Low）を Arduino に送信します。
-6. DI1 トリガ送信成功時のみ、`measurement_file_service.create_measurement_output_file()` で CSV を即時作成します。
+6. DI1 トリガ送信成功時のみ、`measurement_file_service.create_measurement_output_file()` で act を即時作成します。
   - `measurement_start`, `target_cell`, `save_dir` などのメタデータ行を書き込み。
 7. UIを測定中表示に切り替えます。
   - STARTボタンを押下状態へ変更。
@@ -202,7 +202,7 @@ pip install -r requirements.txt
 補足:
 
 - `RuntimeState` に `start_cooldown_sec` はありますが、現行の `START` 経路ではクールダウン判定には使っていません。
-- CSVファイルは「測定トリガ成功後」に作成されるため、prestart 失敗時や DI1 送信失敗時には作成されません。
+- actファイルは「測定トリガ成功後」に作成されるため、prestart 失敗時や DI1 送信失敗時には作成されません。
 
 ## 各ファイルの短い説明（補足）
 
