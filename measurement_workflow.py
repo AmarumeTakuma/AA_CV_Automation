@@ -10,6 +10,23 @@ from runtime_state import OperationState
 from ui_utils import init_gui_vars, reset_ui_state, toggle_ui_lock, set_operation_state, can_start_measurement, can_estop
 
 
+def bring_window_to_front(state):
+    """Windowsの制限を突破してアプリを確実に最前面へ引きずり出す関数"""
+    try:
+        if state.root.winfo_exists():
+            # 1. 強制的に「常に最前面」属性を付与して画面を奪い取る
+            state.root.attributes('-topmost', True)
+            state.root.update()
+            
+            # 2. すぐに「常に最前面」を解除する（これがないと他のアプリが一生前に出られなくなる）
+            state.root.attributes('-topmost', False)
+            
+            # 3. 念押しでOSにフォーカスを要求
+            state.root.lift()
+            state.root.focus_force()
+    except tk.TclError:
+        pass
+
 def finish_measurement_handler(state, add_log):
     if state.is_closing:
         return
@@ -37,6 +54,10 @@ def finish_measurement_handler(state, add_log):
         # Transition back to IDLE
         set_operation_state(state, OperationState.IDLE, add_log)
         reset_ui_state(state)
+
+        # ▼ 追加：測定が正常終了したらアプリを最前面に出す
+        bring_window_to_front(state)
+
         try:
             state.status_label.config(text="Measurement COMPLETED.")
         except tk.TclError:
@@ -89,6 +110,20 @@ def on_estop(state, add_log, handle_device_comm_error):
 
     # Transition to ESTOP_PENDING
     set_operation_state(state, OperationState.ESTOP_PENDING, add_log)
+
+    # ▼ 追加：異常事態なので、何が何でもアプリを最前面に叩き出す
+    bring_window_to_front(state)
+
+    # ▼▼▼ 追加：サブダイアログ（設定ウィンドウ）が開いていたら強制的に消し飛ばす ▼▼▼
+    if hasattr(state, 'active_dialog') and state.active_dialog:
+        try:
+            if state.active_dialog.winfo_exists():
+                state.active_dialog.destroy()
+                add_log("Start dialog closed forcefully by E-STOP.")
+        except Exception:
+            pass
+        state.active_dialog = None
+    # ▲▲▲ 追加ここまで ▲▲▲
 
     try:
         if state.estop_var.get():

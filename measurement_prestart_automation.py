@@ -11,8 +11,10 @@ from tkinter import filedialog, messagebox, ttk
 
 import pyautogui
 import pyperclip
+import keyboard 
 
 from measurement_automation_models import AutomationStep, PrestartAutomationPlan
+from runtime_state import OperationState
 
 
 pyautogui.FAILSAFE = True
@@ -38,10 +40,7 @@ def build_prestart_plan(state, session=None) -> PrestartAutomationPlan:
     is_change_settings = getattr(state, "ui_change_settings", False)
     is_set_dio = getattr(state, "ui_set_dio", False)
 
-    # チェックボックスが両方OFFなら「最速測定開始ルート」を生成
     if not is_change_settings and not is_set_dio:
-        # UIで入力された保存先パスとファイル名を結合して絶対パスを作成
-        # session引数には、UIで入力した情報（MeasurementSession）が渡ってきています
         abs_path = ""
         if session:
             raw_path = os.path.join(session.save_dir, session.filename)
@@ -50,44 +49,12 @@ def build_prestart_plan(state, session=None) -> PrestartAutomationPlan:
         return PrestartAutomationPlan(
             name="fast_start_only",
             steps=[
-                AutomationStep(
-                    name="focus_hoktnet",
-                    action="focus_window",
-                    payload={"title": "Hoktnet"}, 
-                    required=True
-                ),
-                AutomationStep(
-                    name="wait_for_window",
-                    action="wait",
-                    payload={"seconds": 1.0} # ウィンドウが前に出てくるまで待つ
-                ),
-                AutomationStep(
-                    name="click_start_button",
-                    action="locate_and_click",
-                    payload={"image": "start_btn_dummy.png"}, 
-                    required=True
-                ),
-                # ▼▼▼ 保存ダイアログの自動操作 ▼▼▼
-                AutomationStep(
-                    name="wait_for_save_dialog",
-                    action="wait",
-                    # 保存ダイアログが出現するまで少し長めに待機（PCの速度に合わせて調整可）
-                    payload={"seconds": 1.5} 
-                ),
-                AutomationStep(
-                    name="input_file_path",
-                    action="paste_text",
-                    # クリップボード経由で絶対パスを「ファイル名」欄にペースト
-                    payload={"text": abs_path},
-                    required=True
-                ),
-                AutomationStep(
-                    name="press_enter_to_save",
-                    action="press",
-                    # Enterキーを押して保存実行
-                    payload={"keys": ["enter"]},
-                    required=True
-                )
+                AutomationStep(name="focus_hoktnet", action="focus_window", payload={"title": "Hoktnet"}, required=True),
+                AutomationStep(name="wait_for_window", action="wait", payload={"seconds": 1.0}),
+                AutomationStep(name="click_start_button", action="locate_and_click", payload={"image": "start_btn_dummy.png"}, required=True),
+                AutomationStep(name="wait_for_save_dialog", action="wait", payload={"seconds": 1.5}),
+                AutomationStep(name="input_file_path", action="paste_text", payload={"text": abs_path}, required=True),
+                AutomationStep(name="press_enter_to_save", action="press", payload={"keys": ["enter"]}, required=True)
             ],
             notes=["Fast start route triggered by UI checkboxes (Both OFF)."]
         )
@@ -105,9 +72,7 @@ def build_prestart_plan(state, session=None) -> PrestartAutomationPlan:
             payload = {}
         steps.append(
             AutomationStep(
-                name=step_name,
-                action=action,
-                payload=payload,
+                name=step_name, action=action, payload=payload,
                 required=bool(raw_step.get("required", False)),
                 enabled=bool(raw_step.get("enabled", True)),
                 description=str(raw_step.get("description", "")),
@@ -116,47 +81,14 @@ def build_prestart_plan(state, session=None) -> PrestartAutomationPlan:
 
     if not steps:
         steps = [
-            AutomationStep(
-                name="open_quick_start",
-                action="noop",
-                required=False,
-                enabled=False,
-                description="Placeholder for opening the quick start / protocol launcher.",
-            ),
-            AutomationStep(
-                name="choose_protocol",
-                action="noop",
-                required=False,
-                enabled=False,
-                description="Placeholder for selecting the CV protocol.",
-            ),
-            AutomationStep(
-                name="choose_channel",
-                action="noop",
-                required=False,
-                enabled=False,
-                description="Placeholder for selecting HZ-Pro channel 1.",
-            ),
-            AutomationStep(
-                name="configure_dialogs",
-                action="noop",
-                required=False,
-                enabled=False,
-                description="Placeholder for file load and DIO dialog automation.",
-            ),
-            AutomationStep(
-                name="start_measurement_ui",
-                action="noop",
-                required=False,
-                enabled=False,
-                description="Placeholder for the final Start click in the external measurement app.",
-            ),
+            AutomationStep(name="open_quick_start", action="noop", required=False, enabled=False),
+            AutomationStep(name="choose_protocol", action="noop", required=False, enabled=False),
+            AutomationStep(name="choose_channel", action="noop", required=False, enabled=False),
+            AutomationStep(name="configure_dialogs", action="noop", required=False, enabled=False),
+            AutomationStep(name="start_measurement_ui", action="noop", required=False, enabled=False),
         ]
 
-    notes = [
-        "Unspecified UI details are intentionally left as configurable no-ops.",
-        "Add coordinates, hotkeys, or image templates in settings.json under measurement_prestart.steps.",
-    ]
+    notes = ["Unspecified UI details are intentionally left as configurable no-ops."]
     if session is not None:
         notes.append(f"Target cell: {session.target_cell}")
 
@@ -172,39 +104,50 @@ def _resolve_point(payload: dict[str, Any]) -> tuple[int, int] | None:
             return None
     return None
 
+def _is_estop_requested(state):
+    if getattr(state, "operation_state", None) == OperationState.ESTOP_PENDING:
+        return True
+    
+    if keyboard.is_pressed('esc'):
+        state.operation_state = OperationState.ESTOP_PENDING 
+        return True
+        
+    return False
 
-def _run_action(step: AutomationStep):
+
+def _run_action(state, step: AutomationStep):
     payload = step.payload or {}
+
+    if _is_estop_requested(state):
+        return False
 
     if step.action == "noop":
         return True
 
     if step.action == "hotkey":
         keys = payload.get("keys", [])
-        if not keys:
-            return False
+        if not keys: return False
         pyautogui.hotkey(*[str(key) for key in keys])
         return True
 
     if step.action == "press":
         keys = payload.get("keys", [])
-        if not keys:
-            return False
+        if not keys: return False
         for key in keys:
+            if _is_estop_requested(state): return False
             pyautogui.press(str(key))
         return True
 
     if step.action == "write_text":
         text = str(payload.get("text", ""))
-        if not text:
-            return False
+        if not text: return False
         pyautogui.write(text, interval=float(payload.get("interval", 0.01)))
         return True
 
     if step.action == "paste_text":
         text = str(payload.get("text", ""))
-        if not text:
-            return False
+        if not text: return False
+        if _is_estop_requested(state): return False
         pyperclip.copy(text)
         pyautogui.hotkey("ctrl", "v")
         return True
@@ -218,22 +161,35 @@ def _run_action(step: AutomationStep):
     
     if step.action == "locate_and_click":
         image_path = str(payload.get("image", ""))
-        # 最大3秒間、画像が見つかるまで探し続ける（リトライ機能）
         timeout = 3.0 
         start_time = time.time()
         
         while time.time() - start_time < timeout:
+            if _is_estop_requested(state): return False
+                
             try:
-                # 画面内から画像を探して中心座標を取得（confidence=0.9で少しの誤差を許容）
                 x, y = pyautogui.locateCenterOnScreen(image_path, confidence=0.9)
                 
-                # 一瞬でワープするのではなく、0.5秒かけて「スッ」とマウスを移動させる
-                pyautogui.moveTo(x, y, duration=0.5)
+                # ▼ 変更：一瞬で対象座標にテレポートする
+                pyautogui.moveTo(x, y)
+                
+                # ▼ 追加：クリックする直前に0.3秒だけホバリング（待機）し、その間もエマストを監視する
+                hover_start = time.time()
+                while time.time() - hover_start < 0.3:
+                    if _is_estop_requested(state):
+                        print("クリック直前にエマスト割り込み発生！操作を破棄します。")
+                        return False
+                    time.sleep(0.05)
+                
+                # 問題なければクリック実行
+                if _is_estop_requested(state): return False
                 pyautogui.click()
                 return True
             except pyautogui.ImageNotFoundException:
-                # 見つからなければ0.2秒待ってからもう一度探す
-                time.sleep(0.2)
+                start_w = time.time()
+                while time.time() - start_w < 0.2:
+                    if _is_estop_requested(state): return False
+                    time.sleep(0.05)
             except Exception as e:
                 print(f"[Error] Failed to click image: {e}")
                 return False
@@ -242,50 +198,44 @@ def _run_action(step: AutomationStep):
         return False
 
     if step.action == "wait":
-        pyautogui.sleep(float(payload.get("seconds", 0.5)))
+        seconds = float(payload.get("seconds", 0.5))
+        start_w = time.time()
+        while time.time() - start_w < seconds:
+            if _is_estop_requested(state): return False
+            time.sleep(0.05)
         return True
 
     if step.action == "focus_window":
         title = str(payload.get("title", ""))
-        if not title:
-            return False
+        if not title: return False
         try:
             import win32gui
             import win32con
 
             def _enum_handler(hwnd, results):
-                # IsWindowVisible を条件に入れ、透明なゴーストウィンドウを完全に除外する
                 if win32gui.IsWindowVisible(hwnd) and title.lower() in win32gui.GetWindowText(hwnd).lower():
                     results.append(hwnd)
 
             matches: list[int] = []
             win32gui.EnumWindows(_enum_handler, matches)
-            if not matches:
-                print(f"[Error] Window containing '{title}' not found.")
-                return False
+            if not matches: return False
             
-            hwnd = matches[0] # 発見した最初の「目に見える」ウィンドウ
-
-            # 最小化（アイコン化）されている場合は、元のサイズに戻して一瞬待つ
+            hwnd = matches[0]
             if win32gui.IsIconic(hwnd):
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
                 time.sleep(0.3) 
 
-            # 現在最前面にあるウィンドウと違う場合のみ処理
             foreground_hwnd = win32gui.GetForegroundWindow()
             if foreground_hwnd != hwnd:
                 try:
-                    # Windowsのフォーカス奪取制限を確実に解除するためのAlt空打ち+待機
                     pyautogui.press('alt')
-                    # Altキーによるメニューのハイライト状態を解除するために、Escキーを空打ちする
                     pyautogui.press('esc')
                     time.sleep(0.1)
-                    
+                    if _is_estop_requested(state): return False
                     win32gui.SetForegroundWindow(hwnd)
                     win32gui.BringWindowToTop(hwnd)
                 except Exception as e:
                     print(f"[Error] SetForegroundWindow Failed: {e}")
-            
             return True
         except Exception as e:
             print(f"[Error] focus_window Failed: {e}")
@@ -293,8 +243,7 @@ def _run_action(step: AutomationStep):
 
     if step.action == "open_path":
         path_value = str(payload.get("path", ""))
-        if not path_value:
-            return False
+        if not path_value: return False
         pyperclip.copy(path_value)
         pyautogui.hotkey("ctrl", "l")
         pyautogui.hotkey("ctrl", "v")
@@ -312,13 +261,17 @@ def run_prestart_automation(state, session, add_log) -> PrestartAutomationResult
     skipped_steps: list[str] = []
 
     for step in plan.steps:
+        if _is_estop_requested(state):
+            add_log("[System] RPA loop forced to ABORT mid-process due to E-STOP activation.")
+            return PrestartAutomationResult(False, plan.name, executed_steps, skipped_steps, failed_step=step.name)
+
         if not step.enabled:
             skipped_steps.append(step.name)
             add_log(f"Prestart step skipped: {step.name}")
             continue
 
         try:
-            ok = _run_action(step)
+            ok = _run_action(state, step)
             if ok:
                 executed_steps.append(step.name)
                 add_log(f"Prestart step executed: {step.name}")
@@ -329,7 +282,6 @@ def run_prestart_automation(state, session, add_log) -> PrestartAutomationResult
                 return PrestartAutomationResult(False, plan.name, executed_steps, skipped_steps, failed_step=step.name)
 
             skipped_steps.append(step.name)
-            add_log(f"Prestart step left configurable: {step.name}")
         except Exception as err:
             add_log(f"Prestart step error: {step.name}: {err}")
             if step.required:
@@ -348,6 +300,13 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
     dialog.geometry("420x480")
     dialog.transient(state.root)
     dialog.grab_set()
+
+    state.active_dialog = dialog
+
+    def on_dialog_close():
+        state.active_dialog = None
+        dialog.destroy()
+    dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
     tk.Label(dialog, text="File name", font=("Arial", 10, "bold")).pack(pady=(15, 0))
     fname_frame = tk.Frame(dialog)
@@ -381,12 +340,10 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
     
     tk.Label(dialog, text="Automation Options", font=("Arial", 10, "bold")).pack(pady=(15, 0))
 
-    # 設定変更チェックボックスとラジオボタン
     change_settings_var = tk.BooleanVar(value=False)
     settings_method_var = tk.StringVar(value="file")
 
     def toggle_settings_options():
-        # チェックボックスの状態に応じてラジオボタンを有効化・無効化
         ui_state = tk.NORMAL if change_settings_var.get() else tk.DISABLED
         rb_file.config(state=ui_state)
         rb_direct.config(state=ui_state)
@@ -402,7 +359,6 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
     rb_direct = tk.Radiobutton(settings_opt_frame, text="Configure directly in software", variable=settings_method_var, value="direct", state=tk.DISABLED)
     rb_direct.pack(anchor=tk.W)
 
-    # DIO設定チェックボックス
     dio_var = tk.BooleanVar(value=False)
     chk_dio = tk.Checkbutton(dialog, text="Configure DIO", variable=dio_var)
     chk_dio.pack(anchor=tk.W, padx=80, pady=(5, 0))
@@ -415,12 +371,10 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
         save_dir = save_dir_var.get().strip()
         target_cell = cell_var.get().strip()
 
-        # UIで選択された自動化オプションの値を取得
         is_change_settings = change_settings_var.get()
         setting_method = settings_method_var.get()
         is_set_dio = dio_var.get()
 
-        # 必須項目の入力チェック
         if not filename_base:
             messagebox.showwarning("Input Error", "File name is required.")
             return
@@ -431,17 +385,18 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
             messagebox.showwarning("Input Error", "Target cell is required.")
             return
 
-        # システムの裏側（state）にチェックボックスの状態を保存
         state.ui_change_settings = is_change_settings
         state.ui_set_dio = is_set_dio
         
-        # 実行ログに状態を残す（動作確認用）
         add_log(f"UI Options -> ChangeSettings: {is_change_settings}({setting_method}), SetDIO: {is_set_dio}")
 
-        dialog.destroy()
+        on_dialog_close()
         
-        # 実際に測定開始の裏側処理を呼ぶ関数
         def do_execute():
+            if _is_estop_requested(state):
+                print("Start aborted right before execution due to E-STOP.")
+                return
+
             execute_start_measurement(
                 state=state,
                 filename=f"{filename_base}.act",
@@ -451,14 +406,20 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
                 handle_device_comm_error=handle_device_comm_error,
             )
 
-        # カウントダウンを処理する関数（アプリをフリーズさせない仕組み）
         def count_down(n):
+            if getattr(state, "operation_state", None) == OperationState.ESTOP_PENDING:
+                add_log("Countdown aborted due to E-STOP.")
+                try:
+                    state.status_label.config(text="Measurement Start ABORTED (E-STOP).")
+                except tk.TclError:
+                    pass
+                return
+
             if n > 0:
                 try:
                     state.status_label.config(text=f"Starting automation in {n}s... (Please release the mouse)")
                 except tk.TclError:
                     pass
-                # 1秒後（1000ミリ秒後）に、数字を1減らしてもう一度自分を呼ぶ
                 state.root.after(1000, lambda: count_down(n - 1))
             else:
                 try:
@@ -467,8 +428,7 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
                     pass
                 do_execute()
 
-        # カウントダウンを「3秒」からスタート
         count_down(3)
 
     tk.Button(btn_frame, text="Start", command=on_confirm, bg="#ccffcc", width=14).pack(side=tk.LEFT, padx=8)
-    tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_frame, text="Cancel", command=on_dialog_close, width=10).pack(side=tk.LEFT, padx=8)

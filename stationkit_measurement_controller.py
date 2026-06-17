@@ -191,4 +191,4 @@ class MeasurementStationController(StationControllerBase):
         asyncio.run(asyncio.to_thread(self.app_state.device.stop_measurement))
 
     def disconnect_now(self) -> None:
-        asyncio.run(self.disconnect())
+        asyncio.run(self._do_disconnect())

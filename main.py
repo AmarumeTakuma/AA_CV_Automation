@@ -1,6 +1,7 @@
 import sys
 import tkinter as tk
 from tkinter import messagebox
+import keyboard
 
 from app_ui import MainUI
 from config_manager import ConfigManager
@@ -13,7 +14,7 @@ from measurement_workflow import on_estop as on_estop_impl
 from measurement_workflow import on_init_btn as on_init_btn_impl
 from measurement_workflow import on_start as on_start_impl
 from stationkit_measurement_controller import MeasurementStationController
-from runtime_state import RuntimeState
+from runtime_state import RuntimeState, OperationState
 from selection_manager import on_elec_click as on_elec_click_impl
 from selection_manager import on_gas_click as on_gas_click_impl
 from selection_manager import on_master_click as on_master_click_impl
@@ -77,6 +78,29 @@ def on_close():
     on_close_impl(state, add_log)
 
 
+# ▼▼▼ 追加：グローバルEsc監視のセットアップ関数 ▼▼▼
+def setup_global_estop():
+    def _trigger_estop_safe():
+        # アプリ終了時や、すでにエマスト状態の時は何もしない
+        if state.is_closing or state.operation_state == OperationState.ESTOP_PENDING:
+            return
+            
+        add_log("[System] Global ESC key pressed. Forcing E-STOP!")
+        state.estop_var.set(1)
+        on_estop()
+
+    def _on_esc_pressed(event):
+        try:
+            # Tkinterの画面を安全に操作するために、afterを使ってメイン処理に合流させる
+            state.root.after(0, _trigger_estop_safe)
+        except Exception:
+            pass
+
+    # OS全体で「Esc」キーを監視する
+    keyboard.on_press_key('esc', _on_esc_pressed, suppress=False)
+# ▲▲▲ 追加ここまで ▲▲▲
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("Electrode Controller")
@@ -134,7 +158,10 @@ if __name__ == "__main__":
     add_log("Application started. Ready.")
 
     root.protocol("WM_DELETE_WINDOW", on_close)
-    root.bind("<Escape>", lambda _e: (state.estop_var.set(1), on_estop()))
+    
+    # ▼ 追加：グローバルEsc監視をスタート
+    setup_global_estop()
+    
     root.after(100, connect_app)
 
     root.mainloop()
