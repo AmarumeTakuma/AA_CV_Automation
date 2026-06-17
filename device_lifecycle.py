@@ -62,6 +62,7 @@ def check_incoming_data(state, add_log, handle_device_comm_error, finish_measure
                 add_log("[ALERT] Hardware error (HW_ERR,1) received from device! Triggering E-STOP.")
                 
                 # 自動的にエマスト（緊急停止）処理を発動させる
+                state.estop_var.set(1)
                 on_estop(state, add_log, handle_device_comm_error)
 
             line = state.device.read_line()
