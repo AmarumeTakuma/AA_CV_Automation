@@ -2,6 +2,8 @@ from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
 from runtime_state import OperationState
+# ▼ 追加：エマスト機能（on_estop）を呼び出すためにインポート
+from measurement_workflow import on_estop
 
 
 def send_heartbeat_loop(state):
@@ -40,7 +42,8 @@ def comm_watchdog_loop(state, handle_device_comm_error):
         pass
 
 
-def check_incoming_data(state, finish_measurement_handler):
+# ▼ 変更：on_estop を呼ぶために、引数に add_log と handle_device_comm_error を追加
+def check_incoming_data(state, add_log, handle_device_comm_error, finish_measurement_handler):
     if state.is_closing:
         return
 
@@ -48,15 +51,27 @@ def check_incoming_data(state, finish_measurement_handler):
         line = state.device.read_line()
         while line:
             print(f"[Arduino] {line}")
+            
+            # 1. 測定終了の検知
             if "MEASUREMENT_END" in line:
                 finish_measurement_handler()
+            
+            # 2. ハードウェア異常（Hz-Proからのエラー）の検知
+            elif "HW_ERR,1" in line:
+                print("!!! HARDWARE ERROR DETECTED FROM HZ-PRO !!!")
+                add_log("[ALERT] Hardware error (HW_ERR,1) received from device! Triggering E-STOP.")
+                
+                # 自動的にエマスト（緊急停止）処理を発動させる
+                on_estop(state, add_log, handle_device_comm_error)
+
             line = state.device.read_line()
     except Exception as err:
         print(f"Serial Read Error: {err}")
 
     try:
         if state.root.winfo_exists() and not state.is_closing:
-            state.root.after(100, lambda: check_incoming_data(state, finish_measurement_handler))
+            # ▼ 変更：再帰呼び出し時の引数も合わせる
+            state.root.after(100, lambda: check_incoming_data(state, add_log, handle_device_comm_error, finish_measurement_handler))
     except Exception:
         pass
 
@@ -85,7 +100,9 @@ def connect_app(state, add_log, handle_device_comm_error, finish_measurement_han
     try:
         state.stationkit_controller.connect(state.config.serial_port)
 
-        check_incoming_data(state, finish_measurement_handler)
+        # ▼ 変更：check_incoming_data に add_log と handle_device_comm_error を渡すように修正
+        check_incoming_data(state, add_log, handle_device_comm_error, finish_measurement_handler)
+        
         send_heartbeat_loop(state)
         comm_watchdog_loop(state, handle_device_comm_error)
     except (DeviceCommunicationError, DeviceTimeoutError) as err:
