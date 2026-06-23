@@ -134,6 +134,11 @@ def on_estop(state, add_log, handle_device_comm_error):
             print("!!! EMERGENCY STOP ACTIVATED !!!")
             add_log("E-STOP activated.")
 
+            # ▼▼▼ 追加：ハードウェアを安全にシャットダウン ▼▼▼
+            if hasattr(state, "stationkit_controller"):
+                state.stationkit_controller.force_hardware_all_off()
+            # ▲▲▲ 追加ここまで ▲▲▲
+            
             state.device.trigger_estop()
 
             reset_ui_state(state)

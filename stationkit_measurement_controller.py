@@ -192,3 +192,74 @@ class MeasurementStationController(StationControllerBase):
 
     def disconnect_now(self) -> None:
         asyncio.run(self._do_disconnect())
+
+    # ▼▼▼ 追加：対象セルの排他制御をハードウェアに送信するメソッド ▼▼▼
+    def apply_exclusive_routing(self, target_cell: str) -> None:
+        if not self.app_state.device:
+            raise StateError("Device is not initialized")
+        # デバイス通信で画面がフリーズしないよう、別スレッドで安全に実行
+        asyncio.run(asyncio.to_thread(self._apply_exclusive_routing_sync, target_cell))
+
+    def _apply_exclusive_routing_sync(self, target_cell: str) -> None:
+        target_electrodes = self.app_state.config.cells_and_electrodes.get(target_cell, [])
+        
+        # 1. 電極の排他処理
+        for elec_name in self.app_state.elec_chk_vars.keys():
+            is_target = (elec_name in target_electrodes)
+            channel = self.app_state.config.pca_relay_map.get(elec_name)
+            if channel is not None:
+                self.app_state.device.set_pca_relay(channel, 1 if is_target else 0)
+                
+        # 2. ガスの排他処理
+        for gas_name in self.app_state.gas_chk_vars.keys():
+            # ※注意: ここは「セル名」と「ガス名」が完全一致する前提のコードです。
+            # 例: target_cellが "Cell1" なら、ガス名 "Cell1" をONにする。
+            # ルールが異なる場合は `is_target = (gas_name == f"{target_cell}_Gas")` のように変更してください。
+            is_target = (gas_name == target_cell) 
+            servo = self.app_state.config.pca_servo_map.get(gas_name)
+            if servo:
+                angle = servo["on_angle"] if is_target else servo["off_angle"]
+                self.app_state.device.set_servo(servo["channel"], angle)
+
+    # ▼▼▼ 追加：すべてのハードウェアを安全状態（OFF）に強制切断するメソッド ▼▼▼
+    def force_hardware_all_off(self) -> None:
+        """エマスト発動時などに呼び出し、全リレーとサーボを物理的にOFFにする"""
+        if not self.app_state.device or not self.app_state.device.is_connected:
+            return
+        
+        # 画面をフリーズさせないよう別スレッドで安全に実行
+        asyncio.run(asyncio.to_thread(self._force_hardware_all_off_sync))
+
+    def _force_hardware_all_off_sync(self) -> None:
+        import time
+        try:
+            # 1. 最優先：測定器の出力を止める（トリガーOFF）
+            self.app_state.device.stop_measurement()
+            if hasattr(self.app_state.device, "stop_di2"):
+                self.app_state.device.stop_di2()
+            self._log("[E-STOP Sequence] 1. Measurement triggers stopped.")
+            
+            # 測定器からの電流が完全に落ちるまで待機（サージ・アーク防止のため1秒待機）
+            time.sleep(1.0)
+            
+            # 2. 電流が落ちてから、電極リレーを少しずつ時間差でOFFにする
+            self._log("[E-STOP Sequence] 2. Disconnecting electrodes...")
+            for channel in self.app_state.config.pca_relay_map.values():
+                self.app_state.device.set_pca_relay(channel, 0)
+                time.sleep(0.1)  # リレー同時遮断によるノイズと負荷を分散
+                
+            time.sleep(0.5)
+            
+            # 3. ガスサーボをOFF角度にする
+            self._log("[E-STOP Sequence] 3. Closing gas lines...")
+            for servo in self.app_state.config.pca_servo_map.values():
+                self.app_state.device.set_servo(servo["channel"], servo["off_angle"])
+                time.sleep(0.1)  # サーボの同時駆動による電源電圧降下を防ぐ
+                
+            # 4. 最後にArduino側の全体初期化を呼び、完全な安全状態を確定
+            self._log("[E-STOP Sequence] 4. Finalizing device states (SYS,INIT)...")
+            self.app_state.device.initialize_devices()
+                
+            self._log("[System] Hardware shutdown sequence completed safely.")
+        except Exception as e:
+            self._log(f"[Device Error] Failed to complete safe shutdown: {e}")

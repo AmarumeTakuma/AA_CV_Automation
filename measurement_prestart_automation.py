@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 import pyautogui
 import pyperclip
 import keyboard 
+import traceback
 
 from measurement_automation_models import AutomationStep, PrestartAutomationPlan
 from runtime_state import OperationState
@@ -105,6 +106,18 @@ def _resolve_point(payload: dict[str, Any]) -> tuple[int, int] | None:
     return None
 
 def _is_estop_requested(state):
+    if hasattr(state, "root") and state.root.winfo_exists():
+        state.root.update()
+        
+    if hasattr(state, "device") and hasattr(state.device, "send_heartbeat"):
+        current_time = time.time()
+        if not hasattr(state, "last_hb_time") or current_time - state.last_hb_time > 0.5:
+            try:
+                state.device.send_heartbeat()
+                state.last_hb_time = current_time
+            except Exception:
+                pass
+
     if getattr(state, "operation_state", None) == OperationState.ESTOP_PENDING:
         return True
     
@@ -114,6 +127,35 @@ def _is_estop_requested(state):
         
     return False
 
+def _trigger_auto_estop(state, add_log, reason):
+    """RPAの致命的なエラー検知時に、システム全体の緊急停止をキックする"""
+    add_log(f"[ALERT] AUTO E-STOP Triggered by RPA: {reason}")
+    print(f"!!! AUTO E-STOP Triggered: {reason} !!!")
+    
+    state.estop_var.set(1)
+    state.operation_state = OperationState.ESTOP_PENDING
+    
+    def _do_estop():
+        try:
+            from measurement_workflow import on_estop
+            
+            def fallback_handler(ctx, err):
+                add_log(f"[Comm Error during Auto E-STOP] {ctx}: {err}")
+            
+            on_estop(state, add_log, fallback_handler)
+            
+            messagebox.showerror(
+                "Auto E-STOP Triggered",
+                f"The system has been emergency stopped due to an error detected during the automation process.\n\n"
+                f"[Reason]\n{reason}\n\n"
+                f"* Please check the terminal log for detailed error traces."
+            )
+            
+        except Exception as e:
+            add_log(f"[System] Failed to execute auto estop: {e}")
+
+    if state.root.winfo_exists():
+        state.root.after(0, _do_estop)
 
 def _run_action(state, step: AutomationStep):
     payload = step.payload or {}
@@ -170,18 +212,15 @@ def _run_action(state, step: AutomationStep):
             try:
                 x, y = pyautogui.locateCenterOnScreen(image_path, confidence=0.9)
                 
-                # ▼ 変更：一瞬で対象座標にテレポートする
                 pyautogui.moveTo(x, y)
                 
-                # ▼ 追加：クリックする直前に0.3秒だけホバリング（待機）し、その間もエマストを監視する
                 hover_start = time.time()
                 while time.time() - hover_start < 0.3:
                     if _is_estop_requested(state):
-                        print("クリック直前にエマスト割り込み発生！操作を破棄します。")
+                        print("E-STOP interrupt right before click! Discarding operation.")
                         return False
                     time.sleep(0.05)
                 
-                # 問題なければクリック実行
                 if _is_estop_requested(state): return False
                 pyautogui.click()
                 return True
@@ -191,7 +230,7 @@ def _run_action(state, step: AutomationStep):
                     if _is_estop_requested(state): return False
                     time.sleep(0.05)
             except Exception as e:
-                print(f"[Error] Failed to click image: {e}")
+                print(f"[Error] Failed to click image '{image_path}': {e}\n{traceback.format_exc()}")
                 return False
                 
         print(f"[Error] Image '{image_path}' not found on screen after {timeout} seconds.")
@@ -235,10 +274,10 @@ def _run_action(state, step: AutomationStep):
                     win32gui.SetForegroundWindow(hwnd)
                     win32gui.BringWindowToTop(hwnd)
                 except Exception as e:
-                    print(f"[Error] SetForegroundWindow Failed: {e}")
+                    print(f"[Error] SetForegroundWindow Failed for '{title}': {e}\n{traceback.format_exc()}")
             return True
         except Exception as e:
-            print(f"[Error] focus_window Failed: {e}")
+            print(f"[Error] focus_window Failed for '{title}': {e}\n{traceback.format_exc()}")
             return False
 
     if step.action == "open_path":
@@ -279,16 +318,42 @@ def run_prestart_automation(state, session, add_log) -> PrestartAutomationResult
 
             if step.required:
                 add_log(f"Prestart step failed: {step.name}")
+                _trigger_auto_estop(state, add_log, f"Failed to execute required step '{step.name}' (Target not found or timeout).")
                 return PrestartAutomationResult(False, plan.name, executed_steps, skipped_steps, failed_step=step.name)
 
             skipped_steps.append(step.name)
         except Exception as err:
-            add_log(f"Prestart step error: {step.name}: {err}")
+            err_msg = f"Exception at '{step.name}': {err}"
+            add_log(f"Prestart step error: {err_msg}")
+            print(f"{err_msg}\n{traceback.format_exc()}")
+            
             if step.required:
+                _trigger_auto_estop(state, add_log, f"An unexpected error occurred in required step '{step.name}': {err}")
                 return PrestartAutomationResult(False, plan.name, executed_steps, skipped_steps, failed_step=step.name)
             skipped_steps.append(step.name)
 
     return PrestartAutomationResult(True, plan.name, executed_steps, skipped_steps)
+
+
+# ▼▼▼ 追加：ガス名からセル名を推測する関数（app_ui.pyと同等） ▼▼▼
+def _infer_cell_for_gas_local(gas_name, config):
+    upper_name = gas_name.upper().replace("-", " ")
+    for cell_name in config.cells_and_electrodes.keys():
+        if cell_name.upper() in upper_name:
+            return cell_name
+    tokens = upper_name.split()
+    suffix = None
+    for token in reversed(tokens):
+        if len(token) == 1 and token.isalpha():
+            suffix = token
+            break
+    if suffix:
+        for cell_name in config.cells_and_electrodes.keys():
+            cell_tokens = cell_name.upper().replace("-", " ").split()
+            if cell_tokens and cell_tokens[-1] == suffix:
+                return cell_name
+    return None
+# ▲▲▲ 追加ここまで ▲▲▲
 
 
 def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_measurement):
@@ -297,7 +362,7 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
 
     dialog = tk.Toplevel(state.root)
     dialog.title("Measurement Setup")
-    dialog.geometry("420x480")
+    dialog.geometry("550x550")
     dialog.transient(state.root)
     dialog.grab_set()
 
@@ -314,14 +379,27 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
 
     default_name = f"measurement_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     file_name_var = tk.StringVar(value=default_name)
-    tk.Entry(fname_frame, textvariable=file_name_var, width=28).pack(side=tk.LEFT)
+    tk.Entry(fname_frame, textvariable=file_name_var, width=45).pack(side=tk.LEFT)
     tk.Label(fname_frame, text=".act").pack(side=tk.LEFT)
 
     tk.Label(dialog, text="Save directory", font=("Arial", 10, "bold")).pack(pady=(10, 0))
     dir_frame = tk.Frame(dialog)
     dir_frame.pack()
-    save_dir_var = tk.StringVar(value=os.getcwd())
-    tk.Entry(dir_frame, textvariable=save_dir_var, width=28).pack(side=tk.LEFT)
+    
+    history_file_path = ".last_save_dir"
+    default_dir = os.path.expanduser("~/Desktop") 
+    
+    if os.path.exists(history_file_path):
+        try:
+            with open(history_file_path, "r", encoding="utf-8") as f:
+                saved_path = f.read().strip()
+                if os.path.isdir(saved_path):
+                    default_dir = saved_path
+        except Exception:
+            pass
+
+    save_dir_var = tk.StringVar(value=default_dir)
+    tk.Entry(dir_frame, textvariable=save_dir_var, width=45).pack(side=tk.LEFT)
 
     def browse_dir():
         chosen = filedialog.askdirectory(initialdir=save_dir_var.get())
@@ -349,10 +427,10 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
         rb_direct.config(state=ui_state)
 
     chk_settings = tk.Checkbutton(dialog, text="Change Settings", variable=change_settings_var, command=toggle_settings_options)
-    chk_settings.pack(anchor=tk.W, padx=80)
+    chk_settings.pack(anchor=tk.W, padx=120)
 
     settings_opt_frame = tk.Frame(dialog)
-    settings_opt_frame.pack(anchor=tk.W, padx=100)
+    settings_opt_frame.pack(anchor=tk.W, padx=140)
 
     rb_file = tk.Radiobutton(settings_opt_frame, text="Import from external file", variable=settings_method_var, value="file", state=tk.DISABLED)
     rb_file.pack(anchor=tk.W)
@@ -361,7 +439,7 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
 
     dio_var = tk.BooleanVar(value=False)
     chk_dio = tk.Checkbutton(dialog, text="Configure DIO", variable=dio_var)
-    chk_dio.pack(anchor=tk.W, padx=80, pady=(5, 0))
+    chk_dio.pack(anchor=tk.W, padx=120, pady=(5, 0))
 
     btn_frame = tk.Frame(dialog)
     btn_frame.pack(pady=20)
@@ -383,6 +461,53 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
             return
         if not target_cell:
             messagebox.showwarning("Input Error", "Target cell is required.")
+            return
+
+        try:
+            with open(history_file_path, "w", encoding="utf-8") as f:
+                f.write(save_dir)
+        except Exception as e:
+            add_log(f"[Warning] Could not save directory history: {e}")
+
+        confirm_msg = (
+            f"Start measurement for cell '{target_cell}'.\n\n"
+            f"This will exclusively turn ON the electrodes and gas for this cell,\n"
+            f"and disconnect all other cells and gases automatically.\n\n"
+            f"Do you want to proceed?"
+        )
+        if not messagebox.askyesno("Confirm Measurement", confirm_msg, parent=dialog):
+            return
+
+        try:
+            # 1. ハードウェアの切り替え (Controllerへ委譲)
+            if hasattr(state, "stationkit_controller") and hasattr(state.stationkit_controller, "apply_exclusive_routing"):
+                state.stationkit_controller.apply_exclusive_routing(target_cell)
+                add_log(f"Applied exclusive routing for target cell '{target_cell}'.")
+            else:
+                add_log("[Warning] 'apply_exclusive_routing' method not found in controller. UI updated but hardware not switched.")
+
+            # 2. UIのチェックボックス（見た目）を安全に同期
+            target_electrodes = state.config.cells_and_electrodes.get(target_cell, [])
+            
+            # 個別電極のチェックボックスを同期
+            if hasattr(state, "elec_chk_vars"):
+                for elec_name, var in state.elec_chk_vars.items():
+                    var.set(elec_name in target_electrodes)
+                    
+            # ガスのチェックボックスを同期（▼ 修正：推測関数を使用）
+            if hasattr(state, "gas_chk_vars"):
+                for gas_name, var in state.gas_chk_vars.items():
+                    related_cell = _infer_cell_for_gas_local(gas_name, state.config)
+                    var.set(related_cell == target_cell)
+                    
+            # ALL(マスター)のチェックボックスを同期
+            if hasattr(state, "master_chk_vars"):
+                for cell_name, var in state.master_chk_vars.items():
+                    var.set(cell_name == target_cell)
+
+        except Exception as e:
+            add_log(f"[Device Error] Exclusivity switch failed: {e}")
+            messagebox.showerror("Device Error", f"Hardware routing failed. Please check the connection.\n\n{e}", parent=dialog)
             return
 
         state.ui_change_settings = is_change_settings
