@@ -50,9 +50,9 @@ def build_prestart_plan(state, session=None) -> PrestartAutomationPlan:
         return PrestartAutomationPlan(
             name="fast_start_only",
             steps=[
-                AutomationStep(name="focus_hoktnet", action="focus_window", payload={"title": "Hoktnet"}, required=True),
+                AutomationStep(name="focus_hoktnet_client", action="focus_window", payload={"title": "Client"}, required=True),
                 AutomationStep(name="wait_for_window", action="wait", payload={"seconds": 1.0}),
-                AutomationStep(name="click_start_button", action="locate_and_click", payload={"image": "start_btn_dummy.png"}, required=True),
+                AutomationStep(name="click_start_button", action="locate_and_click", payload={"image": "start_btn.png"}, required=True),
                 AutomationStep(name="wait_for_save_dialog", action="wait", payload={"seconds": 1.5}),
                 AutomationStep(name="input_file_path", action="paste_text", payload={"text": abs_path}, required=True),
                 AutomationStep(name="press_enter_to_save", action="press", payload={"keys": ["enter"]}, required=True)

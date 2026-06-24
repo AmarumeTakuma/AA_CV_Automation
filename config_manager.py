@@ -21,6 +21,8 @@ class ConfigManager:
         self.do1_input_pin = -1
         self.do2_input_pin = -1
         self.hw_err_pin = -1
+        # ▼ 追加：物理エマストピンの初期化
+        self.physical_estop_pin = -1
 
         # PCA9685 設定
         self.pca_address = 0x40
@@ -83,6 +85,9 @@ class ConfigManager:
             self.done_pin = self.do1_input_pin
             self.do2_input_pin = gpio.get("do2_input", -1)
             self.hw_err_pin = gpio.get("hw_err_in", -1)
+            
+            # ▼ 追加：物理エマストピンの読み込み
+            self.physical_estop_pin = gpio.get("physical_estop", -1)
 
             # PCA9685 Configuration
             pca_conf = data.get("pca9685", {})

@@ -75,9 +75,8 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     pin_do2 = gpio_conf.get("do2_input", -1)
     pin_hw_err = gpio_conf.get("hw_err_in", -1)
     pin_done = gpio_conf.get("done", -1)
-    # Absorb done into do1_input
-    if pin_do1 >= 0:
-        pin_done = pin_do1
+    # ▼▼▼ 追加：物理エマストピンの読み込み ▼▼▼
+    pin_physical_estop = gpio_conf.get("physical_estop", -1)
 
     # PCA9685 ピン
     pca_conf = data.get("pca_relays", {})
@@ -108,6 +107,9 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
         valid_gpio_pins.add(pin_hw_err)
     if pin_done >= 0:
         valid_gpio_pins.add(pin_done)
+    # ▼▼▼ 追加：物理エマストをホワイトリストに登録 ▼▼▼
+    if pin_physical_estop >= 0:
+        valid_gpio_pins.add(pin_physical_estop)
 
     valid_gpio_list = sorted(list(valid_gpio_pins))
 
@@ -169,6 +171,8 @@ def generate_arduino_header(json_filename="settings.json", header_filename="conf
     lines.append(f"const int DO1_PIN = {pin_do1};")
     lines.append(f"const int DO2_PIN = {pin_do2};")
     lines.append(f"const int HW_ERR_PIN = {pin_hw_err};")
+    # ▼▼▼ 追加：C++側に定数として書き出し ▼▼▼
+    lines.append(f"const int PHYSICAL_ESTOP_PIN = {pin_physical_estop};")
     lines.append("")
 
     # GPIO ホワイトリスト

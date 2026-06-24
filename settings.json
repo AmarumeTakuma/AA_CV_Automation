@@ -7,12 +7,13 @@
   },
 
   "gpio_pins": {
-    "di1_output": 2,
-    "di2_output": 3,
-    "cell_open_in": 4,
-    "do1_input": 5,
-    "do2_input": 6,
-    "hw_err_in": 7
+    "di1_output": 4,
+    "di2_output": 5,
+    "cell_open_in": 6,
+    "do1_input": 7,
+    "do2_input": 8,
+    "hw_err_in": 2,
+    "physical_estop" : 3
   },
 
   "pca9685": {

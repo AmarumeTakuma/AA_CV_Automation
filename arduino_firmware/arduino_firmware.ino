@@ -13,12 +13,17 @@ int gpioPinCount = 0;
 int lastDoneState = HIGH;
 int lastDo1State = HIGH;
 int lastDo2State = HIGH;
-int lastHwErrState = HIGH;
+// lastHwErrState は割り込み化したため削除
 
 // ウォッチドッグ用
 unsigned long lastHeartbeatTime = 0;
 bool watchdogActive = false;
 bool interlockEnabled = true;
+
+// ▼▼▼ 物理エマスト ＆ 測定器エラー 用の割り込みフラグ ▼▼▼
+volatile bool physicalEstopTriggered = false;
+volatile bool hwErrTriggered = false; // 追加：HWエラー用
+// ▲▲▲ ▲▲▲
 
 // PCA9685 制御用定数
 const uint16_t SERVO_MIN_US = 900;
@@ -26,6 +31,16 @@ const uint16_t SERVO_MAX_US = 2100;
 const uint8_t PCA_FREQ_HZ = 50;
 const uint16_t PWM_FULL_ON = 4095;
 const uint16_t PWM_FULL_OFF = 0;
+
+// ▼▼▼ 割り込み関数（ISR） ▼▼▼
+void isrPhysicalEstop() {
+  physicalEstopTriggered = true;
+}
+
+void isrHwErr() {
+  hwErrTriggered = true;
+}
+// ▲▲▲ ▲▲▲
 
 void setup() {
   // 通信設定
@@ -57,9 +72,15 @@ void setup() {
   if (DO2_PIN >= 0) {
     pinMode(DO2_PIN, INPUT_PULLUP);
   }
+
+  // ▼▼▼ 変更：HWエラーも割り込みで監視するように設定 ▼▼▼
   if (HW_ERR_PIN >= 0) {
     pinMode(HW_ERR_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(HW_ERR_PIN), isrHwErr, FALLING);
+    Serial.print("[BOOT] HW Error interrupt attached to pin ");
+    Serial.println(HW_ERR_PIN);
   }
+  // ▲▲▲ ▲▲▲
 
   // GPIO システム制御ピン初期化
   if (DI1_OUTPUT_PIN >= 0) {
@@ -69,6 +90,14 @@ void setup() {
   if (ESTOP_PIN >= 0) {
     digitalWrite(ESTOP_PIN, HIGH);
     pinMode(ESTOP_PIN, OUTPUT);
+  }
+
+  // 物理エマストピンの割り込み設定
+  if (PHYSICAL_ESTOP_PIN >= 0) {
+    pinMode(PHYSICAL_ESTOP_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PHYSICAL_ESTOP_PIN), isrPhysicalEstop, FALLING);
+    Serial.print("[BOOT] Physical E-STOP interrupt attached to pin ");
+    Serial.println(PHYSICAL_ESTOP_PIN);
   }
 
   Serial.println("[BOOT] GPIO initialized.");
@@ -95,6 +124,24 @@ void setup() {
 }
 
 void loop() {
+  // ▼▼▼ 変更：物理エマスト ＆ 測定器エラー のチェック（最優先処理！） ▼▼▼
+  if (physicalEstopTriggered || hwErrTriggered) {
+    // どちらの異常であっても即座に全ハードウェアを強制OFF！
+    forceStopAll(); 
+    
+    if (physicalEstopTriggered) {
+      physicalEstopTriggered = false;
+      Serial.println("EMERGENCY_STOP,PHYSICAL_BUTTON_PRESSED"); 
+    }
+    if (hwErrTriggered) {
+      hwErrTriggered = false;
+      // 互換性のため古いフォーマットのメッセージも送信しつつ、緊急停止メッセージを送信
+      Serial.println("HW_ERR,1");
+      Serial.println("EMERGENCY_STOP,MEASUREMENT_DEVICE_ERROR"); 
+    }
+  }
+  // ▲▲▲ ▲▲▲
+
   // コマンド受信
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
@@ -138,17 +185,8 @@ void loop() {
       lastDo2State = currentDo2;
     }
   }
-
-// HW Error 出力の監視 (Hz-Proが200ms間 LOW(GND) に落とす)
-  if (HW_ERR_PIN >= 0) {
-    int currentHw = digitalRead(HW_ERR_PIN);
-    if (currentHw != lastHwErrState) {
-      Serial.print("HW_ERR,");
-      // ▼変更：LOWになったら"1"(エラーON)、HIGHに戻ったら"0"(エラーOFF)を送信
-      Serial.println(currentHw == LOW ? "1" : "0"); 
-      lastHwErrState = currentHw;
-    }
-  }
+  
+  // ※ループ内にあった HW_ERR_PIN のポーリング処理は、割り込みに移行したため削除しました。
 }
 
 // ============================================

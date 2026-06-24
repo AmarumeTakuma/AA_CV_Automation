@@ -42,7 +42,6 @@ def comm_watchdog_loop(state, handle_device_comm_error):
         pass
 
 
-# ▼ 変更：on_estop を呼ぶために、引数に add_log と handle_device_comm_error を追加
 def check_incoming_data(state, add_log, handle_device_comm_error, finish_measurement_handler):
     if state.is_closing:
         return
@@ -56,14 +55,18 @@ def check_incoming_data(state, add_log, handle_device_comm_error, finish_measure
             if "MEASUREMENT_END" in line:
                 finish_measurement_handler()
             
-            # 2. ハードウェア異常（Hz-Proからのエラー）の検知
-            elif "HW_ERR,1" in line:
-                print("!!! HARDWARE ERROR DETECTED FROM HZ-PRO !!!")
-                add_log("[ALERT] Hardware error (HW_ERR,1) received from device! Triggering E-STOP.")
+            # ▼▼▼ 変更：物理エマスト または HW異常 どちらのメッセージでもエマストを発動させる ▼▼▼
+            elif "HW_ERR,1" in line or "EMERGENCY_STOP" in line:
+                print("!!! HARDWARE/PHYSICAL E-STOP DETECTED FROM DEVICE !!!")
+                
+                # 何が原因で止まったのか（物理ボタンか、HW異常か）をログに残す
+                reason = "Physical Button" if "PHYSICAL" in line else "Measurement Device Error"
+                add_log(f"[ALERT] Emergency stop signal received from device! (Reason: {reason}) Triggering UI E-STOP.")
                 
                 # 自動的にエマスト（緊急停止）処理を発動させる
                 state.estop_var.set(1)
                 on_estop(state, add_log, handle_device_comm_error)
+            # ▲▲▲ 変更ここまで ▲▲▲
 
             line = state.device.read_line()
     except Exception as err:
@@ -71,7 +74,6 @@ def check_incoming_data(state, add_log, handle_device_comm_error, finish_measure
 
     try:
         if state.root.winfo_exists() and not state.is_closing:
-            # ▼ 変更：再帰呼び出し時の引数も合わせる
             state.root.after(100, lambda: check_incoming_data(state, add_log, handle_device_comm_error, finish_measurement_handler))
     except Exception:
         pass
@@ -101,7 +103,6 @@ def connect_app(state, add_log, handle_device_comm_error, finish_measurement_han
     try:
         state.stationkit_controller.connect(state.config.serial_port)
 
-        # ▼ 変更：check_incoming_data に add_log と handle_device_comm_error を渡すように修正
         check_incoming_data(state, add_log, handle_device_comm_error, finish_measurement_handler)
         
         send_heartbeat_loop(state)
