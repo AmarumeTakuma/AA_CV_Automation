@@ -36,7 +36,7 @@ requires-dist = [
     { name = "pyperclip", specifier = ">=1.11.0" },
     { name = "pyserial", specifier = ">=3.5" },
     { name = "pywin32", specifier = ">=311" },
-    { name = "stationkit", directory = "../../Downloads/stationkit-main/stationkit-main" },
+    { name = "stationkit", git = "https://github.com/Nu424/stationkit.git" },
     { name = "typer", specifier = ">=0.26.7" },
 ]
 
@@ -4020,7 +4020,7 @@ wheels = [
 [[package]]
 name = "stationkit"
 version = "0.1.0"
-source = { directory = "../../Downloads/stationkit-main/stationkit-main" }
+source = { git = "https://github.com/Nu424/stationkit.git#39e2195b25af3ad78386a80e77f6c43f6de232d3" }
 dependencies = [
     { name = "fastapi" },
     { name = "gradio" },
@@ -4029,21 +4029,6 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.135.3" },
-    { name = "gradio", specifier = ">=6.12.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
-    { name = "typer", specifier = ">=0.24.1" },
-    { name = "uvicorn", specifier = ">=0.44.0" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "tomlkit"
