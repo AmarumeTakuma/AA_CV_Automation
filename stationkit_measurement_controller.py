@@ -185,6 +185,7 @@ class MeasurementStationController(StationControllerBase):
             raise StateError("Device is not initialized")
         asyncio.run(asyncio.to_thread(self.app_state.device.set_interlock_enabled, enabled))
 
+# ... existing code ...
     def stop_measurement(self) -> None:
         if not self.app_state.device:
             return
@@ -200,6 +201,32 @@ class MeasurementStationController(StationControllerBase):
         # デバイス通信で画面がフリーズしないよう、別スレッドで安全に実行
         asyncio.run(asyncio.to_thread(self._apply_exclusive_routing_sync, target_cell))
 
+    # ▼▼▼ 追加：ガス名から対象のセル名を推測するロジック ▼▼▼
+    def _infer_cell_for_gas(self, gas_name: str) -> str | None:
+        upper_name = gas_name.upper().replace("-", " ")
+        
+        # 1. 完全なセル名が含まれているか
+        for cell_name in self.app_state.config.cells_and_electrodes.keys():
+            if cell_name.upper() in upper_name:
+                return cell_name
+                
+        # 2. 末尾のアルファベット（A, Bなど）でマッチするか
+        tokens = upper_name.split()
+        suffix = None
+        for token in reversed(tokens):
+            if len(token) == 1 and token.isalpha():
+                suffix = token
+                break
+                
+        if suffix:
+            for cell_name in self.app_state.config.cells_and_electrodes.keys():
+                cell_tokens = cell_name.upper().replace("-", " ").split()
+                if cell_tokens and cell_tokens[-1] == suffix:
+                    return cell_name
+                    
+        return None
+    # ▲▲▲ 追加ここまで ▲▲▲
+
     def _apply_exclusive_routing_sync(self, target_cell: str) -> None:
         target_electrodes = self.app_state.config.cells_and_electrodes.get(target_cell, [])
         
@@ -212,16 +239,20 @@ class MeasurementStationController(StationControllerBase):
                 
         # 2. ガスの排他処理
         for gas_name in self.app_state.gas_chk_vars.keys():
-            # ※注意: ここは「セル名」と「ガス名」が完全一致する前提のコードです。
-            # 例: target_cellが "Cell1" なら、ガス名 "Cell1" をONにする。
-            # ルールが異なる場合は `is_target = (gas_name == f"{target_cell}_Gas")` のように変更してください。
-            is_target = (gas_name == target_cell) 
+            # ▼▼▼ 変更：推測ロジックを使って対象ガスかどうか判定する ▼▼▼
+            inferred_cell = self._infer_cell_for_gas(gas_name)
+            
+            if inferred_cell:
+                is_target = (inferred_cell == target_cell)
+            else:
+                is_target = (gas_name == target_cell) # 推測できなければ完全一致でフォールバック
+            # ▲▲▲ 変更ここまで ▲▲▲
+                
             servo = self.app_state.config.pca_servo_map.get(gas_name)
             if servo:
                 angle = servo["on_angle"] if is_target else servo["off_angle"]
                 self.app_state.device.set_servo(servo["channel"], angle)
 
-    # ▼▼▼ 追加：すべてのハードウェアを安全状態（OFF）に強制切断するメソッド ▼▼▼
     def force_hardware_all_off(self) -> None:
         """エマスト発動時などに呼び出し、全リレーとサーボを物理的にOFFにする"""
         if not self.app_state.device or not self.app_state.device.is_connected:
