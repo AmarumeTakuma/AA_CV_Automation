@@ -1,0 +1,16 @@
+[project]
+name = "aa-cv-automation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "keyboard>=0.13.5",
+    "opencv-python>=4.13.0.92",
+    "pyautogui>=0.9.54",
+    "pyperclip>=1.11.0",
+    "pyserial>=3.5",
+    "pywin32>=311",
+    "stationkit @ git+https://github.com/Nu424/stationkit.git",
+    "typer>=0.26.7",
+]

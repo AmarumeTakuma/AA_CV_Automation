@@ -6,21 +6,32 @@
     "baudrate": 9600
   },
 
-  "pins": {
-    "di1_output": 11,
-    "estop": 12,
-    "done": 19
+  "gpio_pins": {
+    "di1_output": 4,
+    "di2_output": 5,
+    "cell_open_in": 6,
+    "do1_input": 7,
+    "do2_input": 8,
+    "hw_err_in": 2,
+    "physical_estop" : 3
   },
 
-  "cells": {
-    "Cell A": {"WE": 2, "CE": 3, "RE": 4},
-    "Cell B": {"WE": 8, "CE": 9, "RE": 10}
+  "pca9685": {
+    "address": 64,
+    "frequency": 50
   },
 
-  "servos": {
-    "Gas Line A": {"pin": 5, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Line B": {"pin": 6, "on_angle": 90, "off_angle": 0, "group": "Gas Channel"},
-    "Gas Purge":  {"pin": 7, "on_angle": 90, "off_angle": 0}
+  "pca_relays": {
+    "Cell A": {"WE": 0, "CE": 1, "RE": 2},
+    "Cell B": {"WE": 4, "CE": 5, "RE": 6},
+    "Cell C": {"WE": 8, "CE": 9, "RE": 10}
+  },
+
+  "pca_servos": {
+    "Gas Line A": {"channel": 12, "on_angle": 70, "off_angle": 20, "group": "Gas Channel"},
+    "Gas Line B": {"channel": 13, "on_angle": 70, "off_angle": 20, "group": "Gas Channel"},
+    "Gas Line C": {"channel": 14, "on_angle": 70, "off_angle": 20, "group": "Gas Channel"},
+    "Gas Purge":  {"channel": 15, "on_angle": 70, "off_angle": 20}
   },
 
   "_separator": "=======================================================",
@@ -29,7 +40,7 @@
   "safety": {
     "watchdog_timeout_ms": 3000,
     "min_angle_diff": 5,
-    "prohibited_pins": [0, 1, 13]
+    "prohibited_pca_channels": []
   },
 
   "validation": {
@@ -37,7 +48,7 @@
   },
 
   "system_limits": {
-    "max_pin_number": 70,
+    "max_pca_channels": 16,
     "max_servos": 12,
     "allowed_baudrates": [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200]
   }
