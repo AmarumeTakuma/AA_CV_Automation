@@ -2,11 +2,11 @@ import tkinter as tk
 from tkinter import messagebox
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
-from measurement_prestart_automation import show_start_dialog
+# ▼ 変更：ダイアログのインポート元を新しいファイルに変更
+from measurement_start_dialog import show_start_dialog
 from stationkit_measurement_controller import MeasurementExecuteRequest
 from runtime_state import OperationState
 from ui_utils import reset_ui_state, set_operation_state, can_start_measurement
-# ▼ 追加：新しく作ったファイルから、最前面化の機能をインポート
 from system_actions import bring_window_to_front
 
 
