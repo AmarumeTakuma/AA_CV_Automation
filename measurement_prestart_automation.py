@@ -377,7 +377,7 @@ def show_start_dialog(state, add_log, handle_device_comm_error, execute_start_me
     fname_frame = tk.Frame(dialog)
     fname_frame.pack()
 
-    default_name = f"measurement_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    default_name = f"CV_1_1_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}"
     file_name_var = tk.StringVar(value=default_name)
     tk.Entry(fname_frame, textvariable=file_name_var, width=45).pack(side=tk.LEFT)
     tk.Label(fname_frame, text=".act").pack(side=tk.LEFT)
