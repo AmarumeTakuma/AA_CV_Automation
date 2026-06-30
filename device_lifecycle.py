@@ -3,7 +3,7 @@ from tkinter import messagebox
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
 from runtime_state import OperationState
 # ▼ 追加：エマスト機能（on_estop）を呼び出すためにインポート
-from measurement_workflow import on_estop
+from system_actions import on_estop
 
 
 def send_heartbeat_loop(state):
