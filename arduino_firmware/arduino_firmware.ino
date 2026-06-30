@@ -1,77 +1,147 @@
-#include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
 #include "config.h"
 
-// デジタルピン管理（使ったピンを記録）
-int activeDigitalPins[MAX_DIGITAL_PINS];
-int digitalPinCount = 0;
+// PCA9685 初期化 (I2C address 0x40)
+Adafruit_PWMServoDriver pca9685(0x40);
 
-// サーボ管理
-Servo servos[MAX_SERVO_COUNT];
-int servoPins[MAX_SERVO_COUNT];
-int servoCount = 0;
-int servoOffAngles[MAX_SERVO_COUNT];
+// GPIO ピン管理
+int activeGPIOPins[MAX_GPIO_PINS];
+int gpioPinCount = 0;
 
-// 終了信号用（必要であれば使用）
+// 終了信号用
 int lastDoneState = HIGH;
+int lastDo1State = HIGH;
+int lastDo2State = HIGH;
+// lastHwErrState は割り込み化したため削除
 
 // ウォッチドッグ用
 unsigned long lastHeartbeatTime = 0;
 bool watchdogActive = false;
+bool interlockEnabled = true;
+
+// ▼▼▼ 物理エマスト ＆ 測定器エラー 用の割り込みフラグ ▼▼▼
+volatile bool physicalEstopTriggered = false;
+volatile bool hwErrTriggered = false; // 追加：HWエラー用
+// ▲▲▲ ▲▲▲
+
+// PCA9685 制御用定数
+const uint16_t SERVO_MIN_US = 900;
+const uint16_t SERVO_MAX_US = 2100;
+const uint8_t PCA_FREQ_HZ = 50;
+const uint16_t PWM_FULL_ON = 4095;
+const uint16_t PWM_FULL_OFF = 0;
+
+// ▼▼▼ 割り込み関数（ISR） ▼▼▼
+void isrPhysicalEstop() {
+  physicalEstopTriggered = true;
+}
+
+void isrHwErr() {
+  hwErrTriggered = true;
+}
+// ▲▲▲ ▲▲▲
 
 void setup() {
-  // 通信設定（config.h に BAUDRATE が定義されていればそれを使い、なければ9600）
+  // 通信設定
   #ifdef BAUDRATE
     Serial.begin(BAUDRATE);
   #else
     Serial.begin(9600);
   #endif
 
+  delay(500);
+
+  // I2C 初期化 (PCA9685 通信用)
+  Wire.begin();
+
   // オンボードLEDを出力に設定し、OFFにしておく
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
-  // 測定終了ピン (入力) の初期化
+  Serial.println("[BOOT] Starting initialization...");
+
+  // GPIO ピン初期化 (測定終了信号)
   if (DONE_PIN >= 0) {
     pinMode(DONE_PIN, INPUT_PULLUP);
   }
 
-  // 管理配列の初期化
-  for(int i=0; i<MAX_SERVO_COUNT; i++) {
-    servoPins[i] = -1;
-    servoOffAngles[i] = 0;
+  if (DO1_PIN >= 0) {
+    pinMode(DO1_PIN, INPUT_PULLUP);
   }
-  for(int i=0; i<MAX_DIGITAL_PINS; i++) {
-    activeDigitalPins[i] = -1;
+  if (DO2_PIN >= 0) {
+    pinMode(DO2_PIN, INPUT_PULLUP);
   }
 
-  // configからサーボのデフォルト角度を読み込む
-  for(int i=0; i<SERVO_COUNT_DEF; i++) {
-    int pin = SERVO_DEFAULTS[i][0];
-    int angle = SERVO_DEFAULTS[i][1];
-    if(pin != -1) {
-        int idx = getServoIndex(pin); 
-        if(idx != -1) {
-            servoOffAngles[idx] = angle;
-            servos[idx].write(angle); // 起動時にすぐオフ角度に
-        }
-    }
+  // ▼▼▼ 変更：HWエラーも割り込みで監視するように設定 ▼▼▼
+  if (HW_ERR_PIN >= 0) {
+    pinMode(HW_ERR_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(HW_ERR_PIN), isrHwErr, FALLING);
+    Serial.print("[BOOT] HW Error interrupt attached to pin ");
+    Serial.println(HW_ERR_PIN);
   }
+  // ▲▲▲ ▲▲▲
 
-  // システム制御ピン（DI1 Output/Estop）の初期化
+  // GPIO システム制御ピン初期化
   if (DI1_OUTPUT_PIN >= 0) {
-    digitalWrite(DI1_OUTPUT_PIN, HIGH); // 先にOFF(HIGH)状態にする
-    pinMode(DI1_OUTPUT_PIN, OUTPUT);    // その後で出力モードへ
+    digitalWrite(DI1_OUTPUT_PIN, HIGH);
+    pinMode(DI1_OUTPUT_PIN, OUTPUT);
   }
   if (ESTOP_PIN >= 0) {
-    digitalWrite(ESTOP_PIN, HIGH); // 先にOFF(HIGH)状態にする
-    pinMode(ESTOP_PIN, OUTPUT);    // その後で出力モードへ
+    digitalWrite(ESTOP_PIN, HIGH);
+    pinMode(ESTOP_PIN, OUTPUT);
   }
 
+  // 物理エマストピンの割り込み設定
+  if (PHYSICAL_ESTOP_PIN >= 0) {
+    pinMode(PHYSICAL_ESTOP_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PHYSICAL_ESTOP_PIN), isrPhysicalEstop, FALLING);
+    Serial.print("[BOOT] Physical E-STOP interrupt attached to pin ");
+    Serial.println(PHYSICAL_ESTOP_PIN);
+  }
 
-  Serial.println("Arduino Ready.");
+  Serial.println("[BOOT] GPIO initialized.");
+
+  // PCA9685 初期化
+  Serial.println("[BOOT] Initializing PCA9685...");
+  if (!pca9685.begin()) {
+    Serial.println("ERROR: PCA9685 not found!");
+    digitalWrite(LED_BUILTIN, HIGH); // エラー表示
+  } else {
+    pca9685.setOscillatorFrequency(27000000);
+    pca9685.setPWMFreq(PCA_FREQ_HZ);
+    // すべてのリレーとサーボを安全初期化
+    initializeAllPCA();
+    Serial.println("PCA9685 initialized.");
+  }
+
+  // GPIO 管理配列初期化
+  for(int i = 0; i < MAX_GPIO_PINS; i++) {
+    activeGPIOPins[i] = -1;
+  }
+
+  Serial.println("Arduino Ready. Command format: SYS,HB / GPIO,SET,pin,val / PCA,SET,ch,val / SERVO,SET,ch,angle");
 }
 
 void loop() {
+  // ▼▼▼ 変更：物理エマスト ＆ 測定器エラー のチェック（最優先処理！） ▼▼▼
+  if (physicalEstopTriggered || hwErrTriggered) {
+    // どちらの異常であっても即座に全ハードウェアを強制OFF！
+    forceStopAll(); 
+    
+    if (physicalEstopTriggered) {
+      physicalEstopTriggered = false;
+      Serial.println("EMERGENCY_STOP,PHYSICAL_BUTTON_PRESSED"); 
+    }
+    if (hwErrTriggered) {
+      hwErrTriggered = false;
+      // 互換性のため古いフォーマットのメッセージも送信しつつ、緊急停止メッセージを送信
+      Serial.println("HW_ERR,1");
+      Serial.println("EMERGENCY_STOP,MEASUREMENT_DEVICE_ERROR"); 
+    }
+  }
+  // ▲▲▲ ▲▲▲
+
   // コマンド受信
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
@@ -81,183 +151,380 @@ void loop() {
   // ウォッチドッグ監視
   if (watchdogActive) {
     if (millis() - lastHeartbeatTime > WATCHDOG_TIMEOUT) {
-      forceStopAll(); // 緊急停止
-      watchdogActive = false; // 監視を一旦止める（次のHBが来るまで）
+      forceStopAll();
+      watchdogActive = false;
     }
   }
 
-  // 測定終了信号の監視 (Active Low: HIGH -> LOW)
-  int currentDoneState = digitalRead(DONE_PIN);
-  if (lastDoneState == HIGH && currentDoneState == LOW) {
+  // 測定終了信号の監視
+  if (DONE_PIN >= 0) {
+    int currentDoneState = digitalRead(DONE_PIN);
+    if (lastDoneState == HIGH && currentDoneState == LOW) {
       Serial.println("MEASUREMENT_END");
       delay(50);
+    }
+    lastDoneState = currentDoneState;
   }
-  lastDoneState = currentDoneState;
-}
 
-// 補助関数
+  // DO1 (測定終了フラグとして扱う)
+  if (DO1_PIN >= 0) {
+    int currentDo1 = digitalRead(DO1_PIN);
+    if (lastDo1State == HIGH && currentDo1 == LOW) {
+      Serial.println("MEASUREMENT_END");
+      delay(20);
+    }
+    lastDo1State = currentDo1;
+  }
 
-// 緊急停止：全てを初期状態に戻す
-void forceStopAll() {
-  // デジタルピンを全てOFF
-  for(int i=0; i<digitalPinCount; i++) {
-    int pin = activeDigitalPins[i];
-    if (pin != -1) {
-      digitalWrite(pin, LOW); // 強制OFF
+  // DO2 (下地: 変化検出を通知)
+  if (DO2_PIN >= 0) {
+    int currentDo2 = digitalRead(DO2_PIN);
+    if (currentDo2 != lastDo2State) {
+      Serial.print("DO2,EVENT,");
+      Serial.println(currentDo2);
+      lastDo2State = currentDo2;
     }
   }
-  // リストをリセット
-  digitalPinCount = 0;
-  for(int i=0; i<MAX_DIGITAL_PINS; i++) {
-    activeDigitalPins[i] = -1;
-  }
   
-  // サーボを全て初期角度（OFF位置）に戻す
-  for(int i=0; i<MAX_SERVO_COUNT; i++) {
-    if (servoPins[i] != -1) {
-      servos[i].write(servoOffAngles[i]);
+  // ※ループ内にあった HW_ERR_PIN のポーリング処理は、割り込みに移行したため削除しました。
+}
+
+// ============================================
+// PCA9685 ユーティリティ
+// ============================================
+
+uint16_t angleToPWM(uint8_t angle) {
+  angle = constrain(angle, 0, 180);
+  const uint32_t periodUs = 1000000UL / PCA_FREQ_HZ;
+  const uint16_t pulseUs = map(angle, 0, 180, SERVO_MIN_US, SERVO_MAX_US);
+  return (uint16_t)((pulseUs * 4096UL) / periodUs);
+}
+
+void setPCARelay(uint8_t channel, bool on) {
+  const uint16_t valueOn = PWM_FULL_ON;
+  const uint16_t valueOff = PWM_FULL_OFF;
+  pca9685.setPWM(channel, 0, on ? valueOn : valueOff);
+}
+
+void setPCAServo(uint8_t channel, uint8_t angle) {
+  uint16_t pwmValue = angleToPWM(angle);
+  pca9685.setPWM(channel, 0, pwmValue);
+}
+
+void initializeAllPCA() {
+  // すべてのリレーをOFF
+  for (uint8_t i = 0; i < 16; i++) {
+    pca9685.setPWM(i, 0, PWM_FULL_OFF);
+  }
+
+  // サーボは設定済みのデフォルト角度へ戻す
+  for (int i = 0; i < SERVO_COUNT_DEF; i++) {
+    int channel = SERVO_DEFAULTS[i][0];
+    int angle = SERVO_DEFAULTS[i][1];
+    if (channel >= 0 && channel < 16) {
+      setPCAServo((uint8_t)channel, (uint8_t)angle);
     }
   }
-
-  // 緊急停止したらLEDを点灯
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-  
-  Serial.println("Error: Watchdog Timeout! System Halted.");
 }
 
-// config.h に書かれた使っていいピンかどうかを確認
-bool isValidPin(int pin) {
-  for (int i=0; i<VALID_PIN_COUNT; i++) {
-    if (VALID_PINS[i] == pin) return true;
-  }
-  Serial.print("Error: Pin "); Serial.print(pin); Serial.println(" is NOT in whitelist.");
-  return false;
-}
+// ============================================
+// GPIO 制御
+// ============================================
 
-// 排他制御チェック
-bool checkInterlock(int targetPin) {
-  for (int i=0; i<PAIR_COUNT; i++) {
-    int pinA = EXCLUSIVE_PAIRS[i][0];
-    int pinB = EXCLUSIVE_PAIRS[i][1];
-    if (pinA == -1) continue;
+void setGPIO(int pin, int value) {
+  if (pin < 0) return;
 
-    // 自分がAで、相方のBが既にONならブロック
-    if (targetPin == pinA) {
-      if (digitalRead(pinB) == HIGH) {
-        Serial.print("BLOCK: Pin "); Serial.print(pinA); Serial.print(" vs ON-Pin "); Serial.println(pinB);
-        return false;
-      }
-    } 
-    // 自分がBで、相方のAが既にONならブロック
-    else if (targetPin == pinB) {
-      if (digitalRead(pinA) == HIGH) {
-        Serial.print("BLOCK: Pin "); Serial.print(pinB); Serial.print(" vs ON-Pin "); Serial.println(pinA);
-        return false;
-      }
+  // ホワイトリスト確認
+  bool valid = false;
+  for (int i = 0; i < VALID_GPIO_COUNT; i++) {
+    if (VALID_GPIO_PINS[i] == pin) {
+      valid = true;
+      break;
     }
   }
-  return true;
-}
-
-int getServoIndex(int pin) {
-  // 登録済みならそのインデックスを返す
-  for(int i=0; i<servoCount; i++) {
-    if (servoPins[i] == pin) return i;
-  }
-  // 未登録なら空き枠を探す
-  if (servoCount < MAX_SERVO_COUNT) {
-    servos[servoCount].attach(pin); // ここで初めてattach
-    servoPins[servoCount] = pin;
-    servoCount++;
-    return servoCount - 1;
-  }
-  return -1; // 満員
-}
-
-// デジタル出力実行
-void setDigitalPin(int pin, int value) {
-  if (!isValidPin(pin)) return; // ホワイトリスト
-  if (value == 1) {
-    if (!checkInterlock(pin)) return; // 排他制御
-  }
-
-  // ピン出力実行
-  pinMode(pin, OUTPUT); // 念のためモード設定
-  digitalWrite(pin, value);
-  
-  // 使用済みリストに登録（緊急停止機能用）
-  bool found = false;
-  for(int i=0; i<digitalPinCount; i++) {
-    if(activeDigitalPins[i] == pin) {
-      found = true;
-    }
-  }
-  if(!found && digitalPinCount < MAX_DIGITAL_PINS) {
-    activeDigitalPins[digitalPinCount] = pin;
-    digitalPinCount++;
-  }
-  
-  Serial.print("Executed DO Pin:"); Serial.println(pin);
-}
-
-// コマンド解析
-void parseCommand(String cmd) {
-  cmd.trim(); // 前後の空白を削除
-
-  if(cmd.startsWith("HB")) {
-    lastHeartbeatTime = millis(); // タイマーリセット
-    watchdogActive = true; // 監視有効化（接続されたとみなす）
-    digitalWrite(LED_BUILTIN, LOW); // 正常に通信できているのでLEDを消す
+  if (!valid) {
+    Serial.print("Error: GPIO pin ");
+    Serial.print(pin);
+    Serial.println(" is not whitelisted.");
     return;
   }
-  
-  if (cmd.startsWith("DO,")) { 
-    // DigitalOutput用コマンド (DO,ピン番号,0/1)
-    int firstComma = cmd.indexOf(',');
-    int secondComma = cmd.indexOf(',', firstComma + 1);
-    
-    if (firstComma > 0 && secondComma > 0) {
-      int pin = cmd.substring(firstComma + 1, secondComma).toInt(); // ピン番号
-      int value = cmd.substring(secondComma + 1).toInt(); // 値 (0 or 1)
-       
-      setDigitalPin(pin, value);
-    } else { 
-      Serial.println("Error: DO format (expected DO,pin,val)."); 
+
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, value);
+
+  // アクティブリストに登録
+  bool found = false;
+  for (int i = 0; i < gpioPinCount; i++) {
+    if (activeGPIOPins[i] == pin) {
+      found = true;
+      break;
     }
+  }
+  if (!found && gpioPinCount < MAX_GPIO_PINS) {
+    activeGPIOPins[gpioPinCount] = pin;
+    gpioPinCount++;
+  }
 
-  } else if (cmd.startsWith("SV,")) { 
-    // サーボ制御コマンド (SV,ピン番号,角度)
-    int firstComma = cmd.indexOf(',');
-    int secondComma = cmd.indexOf(',', firstComma + 1);
-    
-    if (firstComma > 0 && secondComma > 0) {
-      int pin = cmd.substring(firstComma + 1, secondComma).toInt(); // ピン番号
-      int angle = cmd.substring(secondComma + 1).toInt(); // 角度
-      
-      // 安全のためこちら側でも角度を0-180に制限
-      angle = constrain(angle, 0, 180); 
-      
-      // ホワイトリスト確認
-      if (!isValidPin(pin)) return; 
+  Serial.print("GPIO,SET,");
+  Serial.print(pin);
+  Serial.print(",");
+  Serial.println(value);
+}
 
-      // 配列からサーボを探して動かす
-      int idx = getServoIndex(pin);
-      if (idx != -1) {
-        servos[idx].write(angle);
-        Serial.print("Executed SV Pin:"); Serial.print(pin);
-        Serial.print(", Angle:"); Serial.println(angle);
+void pulseGPIO(int pin, unsigned int durationMs) {
+  if (pin < 0) return;
+
+  setGPIO(pin, 0); // LOW (ON)
+  delay(durationMs);
+  setGPIO(pin, 1); // HIGH (OFF)
+
+  Serial.print("GPIO,PULSE,");
+  Serial.print(pin);
+  Serial.print(",");
+  Serial.println(durationMs);
+}
+
+// ============================================
+// PCA 制御
+// ============================================
+
+void setPCA(uint8_t channel, int value) {
+  if (channel >= 16) {
+    Serial.println("Error: PCA channel out of range (0-15).");
+    return;
+  }
+
+  setPCARelay(channel, value != 0);
+
+  Serial.print("PCA,SET,");
+  Serial.print(channel);
+  Serial.print(",");
+  Serial.println(value);
+}
+
+// ============================================
+// サーボ制御 (PCA9685 経由)
+// ============================================
+
+void setServo(uint8_t channel, uint8_t angle) {
+  if (channel >= 16) {
+    Serial.println("Error: Servo channel out of range (0-15).");
+    return;
+  }
+
+  angle = constrain(angle, 0, 180);
+  setPCAServo(channel, angle);
+
+  Serial.print("SERVO,SET,");
+  Serial.print(channel);
+  Serial.print(",");
+  Serial.println(angle);
+}
+
+// ============================================
+// 緊急停止 & 初期化
+// ============================================
+
+void forceStopAll() {
+  // GPIO をすべて安全側へ
+  if (DI1_OUTPUT_PIN >= 0) {
+    digitalWrite(DI1_OUTPUT_PIN, HIGH);
+  }
+  if (ESTOP_PIN >= 0) {
+    digitalWrite(ESTOP_PIN, HIGH);
+  }
+
+  // PCA9685 をすべてOFFへ
+  initializeAllPCA();
+
+  // GPIO リストをリセット
+  gpioPinCount = 0;
+  for (int i = 0; i < MAX_GPIO_PINS; i++) {
+    activeGPIOPins[i] = -1;
+  }
+
+  // 警告LED点灯
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  Serial.println("SYSTEM,EMERGENCY_STOP");
+}
+
+void initializeDevices() {
+  // GPIO 初期化
+  if (DI1_OUTPUT_PIN >= 0) {
+    setGPIO(DI1_OUTPUT_PIN, 1); // HIGH (OFF, Active Low)
+  }
+  if (ESTOP_PIN >= 0) {
+    setGPIO(ESTOP_PIN, 1); // HIGH (OFF, Active Low)
+  }
+
+  // PCA9685 初期化
+  initializeAllPCA();
+
+  // 排他制御の有効化
+  interlockEnabled = true;
+
+  Serial.println("SYSTEM,INIT_OK");
+}
+
+// ============================================
+// コマンド解析
+// ============================================
+
+void parseCommand(String cmd) {
+  cmd.trim();
+
+  if (cmd.length() == 0) return;
+
+  // コマンド分割
+  int firstComma = cmd.indexOf(',');
+  if (firstComma == -1) {
+    Serial.println("Error: Invalid command format.");
+    return;
+  }
+
+  String cmdType = cmd.substring(0, firstComma);
+
+  // ============ SYS コマンド ============
+  if (cmdType == "SYS") {
+    int nextComma = cmd.indexOf(',', firstComma + 1);
+    String subCmd = (nextComma == -1) 
+      ? cmd.substring(firstComma + 1) 
+      : cmd.substring(firstComma + 1, nextComma);
+
+    if (subCmd == "HB") {
+      lastHeartbeatTime = millis();
+      watchdogActive = true;
+      digitalWrite(LED_BUILTIN, LOW);
+      Serial.println("SYS,HB,ACK");
+    } 
+    else if (subCmd == "IL") {
+      if (nextComma != -1) {
+        int val = cmd.substring(nextComma + 1).toInt();
+        interlockEnabled = (val != 0);
+        Serial.print("SYS,IL,");
+        Serial.println(interlockEnabled ? "ON" : "OFF");
       } else {
-        Serial.println("Error: Servo limit reached.");
+        Serial.println("Error: IL format (expected SYS,IL,0/1).");
       }
+    }
+    else if (subCmd == "INIT") {
+      initializeDevices();
+    }
+    else if (subCmd == "STOP") {
+      forceStopAll();
+    }
+    else {
+      Serial.println("Error: Unknown SYS subcommand.");
+    }
+  }
 
-    } else { 
-      Serial.println("Error: SV format (expected SV,pin,angle)."); 
+  // ============ GPIO コマンド ============
+  else if (cmdType == "GPIO") {
+    // GPIO,SET,pin,value
+    // GPIO,PULSE,pin,duration_ms
+    int comma1 = cmd.indexOf(',', firstComma + 1);
+    if (comma1 == -1) {
+      Serial.println("Error: GPIO format invalid.");
+      return;
     }
-    
-  } else {
-    if (cmd.length() > 0) {
-        Serial.println("Error: Unknown command prefix.");
+
+    String action = cmd.substring(firstComma + 1, comma1);
+    int comma2 = cmd.indexOf(',', comma1 + 1);
+    if (comma2 == -1) {
+      Serial.println("Error: GPIO format invalid.");
+      return;
     }
+
+    int pin = cmd.substring(comma1 + 1, comma2).toInt();
+
+    if (action == "SET") {
+      int comma3 = cmd.indexOf(',', comma2 + 1);
+      int value = 0;
+      if (comma3 == -1) {
+        // allow value without an extra comma (tolerant parsing)
+        value = cmd.substring(comma2 + 1).toInt();
+      } else {
+        value = cmd.substring(comma2 + 1, comma3).toInt();
+      }
+      setGPIO(pin, value);
+    } 
+    else if (action == "PULSE") {
+      unsigned int duration = cmd.substring(comma2 + 1).toInt();
+      pulseGPIO(pin, duration);
+    }
+    else {
+      Serial.println("Error: Unknown GPIO action.");
+    }
+  }
+
+  // ============ PCA コマンド ============
+  else if (cmdType == "PCA") {
+    // PCA,SET,channel,value
+    int comma1 = cmd.indexOf(',', firstComma + 1);
+    if (comma1 == -1) {
+      Serial.println("Error: PCA format invalid.");
+      return;
+    }
+
+    String action = cmd.substring(firstComma + 1, comma1);
+    int comma2 = cmd.indexOf(',', comma1 + 1);
+    if (comma2 == -1) {
+      Serial.println("Error: PCA format invalid.");
+      return;
+    }
+
+    uint8_t channel = cmd.substring(comma1 + 1, comma2).toInt();
+
+    if (action == "SET") {
+      int comma3 = cmd.indexOf(',', comma2 + 1);
+      int value = 0;
+      if (comma3 == -1) {
+        value = cmd.substring(comma2 + 1).toInt();
+      } else {
+        value = cmd.substring(comma2 + 1, comma3).toInt();
+      }
+      setPCA(channel, value);
+    }
+    else {
+      Serial.println("Error: Unknown PCA action.");
+    }
+  }
+
+  // ============ SERVO コマンド ============
+  else if (cmdType == "SERVO") {
+    // SERVO,SET,channel,angle
+    int comma1 = cmd.indexOf(',', firstComma + 1);
+    if (comma1 == -1) {
+      Serial.println("Error: SERVO format invalid.");
+      return;
+    }
+
+    String action = cmd.substring(firstComma + 1, comma1);
+    int comma2 = cmd.indexOf(',', comma1 + 1);
+    if (comma2 == -1) {
+      Serial.println("Error: SERVO format invalid.");
+      return;
+    }
+
+    uint8_t channel = cmd.substring(comma1 + 1, comma2).toInt();
+
+    if (action == "SET") {
+      int comma3 = cmd.indexOf(',', comma2 + 1);
+      uint8_t angle = 0;
+      if (comma3 == -1) {
+        angle = cmd.substring(comma2 + 1).toInt();
+      } else {
+        angle = cmd.substring(comma2 + 1, comma3).toInt();
+      }
+      setServo(channel, angle);
+    }
+    else {
+      Serial.println("Error: Unknown SERVO action.");
+    }
+  }
+
+  else {
+    Serial.println("Error: Unknown command type.");
   }
 }
