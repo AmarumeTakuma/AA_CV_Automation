@@ -137,7 +137,7 @@ def _trigger_auto_estop(state, add_log, reason):
     
     def _do_estop():
         try:
-            from measurement_workflow import on_estop
+            from system_actions import on_estop
             
             def fallback_handler(ctx, err):
                 add_log(f"[Comm Error during Auto E-STOP] {ctx}: {err}")
