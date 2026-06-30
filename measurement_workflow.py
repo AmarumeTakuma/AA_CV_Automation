@@ -134,13 +134,7 @@ def on_estop(state, add_log, handle_device_comm_error):
             print("!!! EMERGENCY STOP ACTIVATED !!!")
             add_log("E-STOP activated.")
 
-            # ▼▼▼ 追加：ハードウェアを安全にシャットダウン ▼▼▼
-            if hasattr(state, "stationkit_controller"):
-                state.stationkit_controller.force_hardware_all_off()
-            # ▲▲▲ 追加ここまで ▲▲▲
-            
-            state.device.trigger_estop()
-
+            # UIのリセットは先に済ませる（画面フリーズを防ぐため）
             reset_ui_state(state)
             init_gui_vars(state)
 
@@ -156,7 +150,33 @@ def on_estop(state, add_log, handle_device_comm_error):
                 except tk.TclError:
                     pass
 
-            state.root.after(int(state.estop_pulse_duration_sec * 1000), reset_estop_button_color)
+            # ▼▼▼ 変更：ハードウェアの順次遮断（ディレイ待ち）を裏側で実行する ▼▼▼
+            import threading
+            import time
+            def _hardware_shutdown():
+                start_time = time.monotonic()
+                try:
+                    if hasattr(state, "stationkit_controller"):
+                        state.stationkit_controller.force_hardware_all_off()
+                    state.device.trigger_estop()
+                except Exception as e:
+                    print(f"Error during hardware shutdown: {e}")
+                
+                # ハードウェア遮断処理にかかった時間を計測し、最低マージンを待機
+                elapsed = time.monotonic() - start_time
+                if elapsed < state.estop_pulse_duration_sec:
+                    time.sleep(state.estop_pulse_duration_sec - elapsed)
+                
+                # リセット作業と待機が完了したら、メインスレッドでUIロックを解除
+                try:
+                    state.root.after(0, reset_estop_button_color)
+                except Exception:
+                    pass
+
+            # 画面を止めないように別スレッドで発射！
+            threading.Thread(target=_hardware_shutdown, daemon=True).start()
+            # ▲▲▲ 変更ここまで ▲▲▲
+
             state.last_estop_time = time.monotonic()
         else:
             state.device.set_digital(state.config.estop_pin, 1)
