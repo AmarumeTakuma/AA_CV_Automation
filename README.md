@@ -33,7 +33,6 @@ AA_CV_Automation/
 ├── measurement_workflow.py
 ├── measurement_prestart_automation.py
 ├── measurement_start_dialog.py
-├── measurement_file_service.py
 ├── measurement_service.py
 ├── measurement_automation_models.py
 ├── stationkit_measurement_controller.py
@@ -77,7 +76,6 @@ AA_CV_Automation/
 - `measurement_workflow.py`: 測定開始・終了の制御。
 - `measurement_prestart_automation.py`: 測定直前の GUI 自動操作。
 - `measurement_start_dialog.py`: ファイル名、保存先、対象セルの選択ダイアログ。
-- `measurement_file_service.py`: `.act` ファイルの作成。
 - `selection_manager.py`: 電極とガスラインの個別操作、排他制御。
 - `system_actions.py`: E-STOP、初期化、終了処理。
 - `ui_utils.py`: 状態遷移、UI ロック、ログ更新の共通処理。
@@ -149,7 +147,7 @@ python main.py
 3. 測定ダイアログでファイル名、保存先、対象セルを選びます。
 4. 必要に応じて開始前の自動操作を実行します。
 5. Arduino に DI1 の開始トリガーが送られます。
-6. `.act` ファイルが即座に作成されます。
+6. 指定した名前と保存先は測定セッション情報として保持され、実際の保存は下流の測定ソフト側で行われます。
 7. 測定完了信号を受けると、停止処理が走って待機状態に戻ります。
 
 `E-STOP` は画面上のボタンに加えて、`Esc` キーでも発動できます。
@@ -257,9 +255,10 @@ PCA9685 のアドレスと周波数です。
 
 ## 測定ファイル
 
-測定が開始すると、選択したファイル名で `.act` ファイルが作成されます。ファイルには次のようなメタデータが入ります。
+測定開始時には、指定したファイル名と保存先が測定セッション情報として扱われます。このアプリ側では新しいファイルを作成しません。
 
-- 測定開始の印
+セッションには次の情報が保持されます。
+
 - 対象セル
 - 保存先
 - シリアルポート

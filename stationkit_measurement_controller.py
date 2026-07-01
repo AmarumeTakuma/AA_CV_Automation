@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from stationkit import StateError, StationControllerBase
 
 from device_controller import DeviceCommunicationError, DeviceTimeoutError
-from measurement_file_service import create_measurement_output_file
 from measurement_prestart_automation import run_prestart_automation
 from measurement_service import MeasurementSession, collect_selected_electrodes, collect_selected_gas_lines
 from runtime_state import OperationState
@@ -146,16 +145,6 @@ class MeasurementStationController(StationControllerBase):
             if not started:
                 raise DeviceCommunicationError("Measurement start trigger failed")
 
-            output_path = create_measurement_output_file(
-                save_dir=params.save_dir,
-                filename=params.filename,
-                target_cell=params.target_cell,
-                selected_electrodes=self.app_state.current_measurement.selected_electrodes,
-                selected_gas_lines=self.app_state.current_measurement.selected_gas_lines,
-                exclusive_interlock_enabled=self.app_state.current_measurement.exclusive_interlock_enabled,
-                serial_port=self.app_state.current_measurement.serial_port,
-            )
-            self._log(f"Measurement file created: {output_path}")
             if self.app_state.start_btn:
                 self.app_state.start_btn.config(relief="sunken")
             self.app_state.root.update()
@@ -163,7 +152,7 @@ class MeasurementStationController(StationControllerBase):
             self.app_state.status_label.config(text=f"Measurement STARTED: {params.target_cell}")
             self._log("Measurement started.")
             self.app_state.last_start_time = time.monotonic()
-            return {"ok": True, "output_path": str(output_path), "target_cell": params.target_cell}
+            return {"ok": True, "target_cell": params.target_cell}
         except Exception:
             set_operation_state(self.app_state, OperationState.IDLE, self._log)
             raise
@@ -185,7 +174,6 @@ class MeasurementStationController(StationControllerBase):
             raise StateError("Device is not initialized")
         asyncio.run(asyncio.to_thread(self.app_state.device.set_interlock_enabled, enabled))
 
-# ... existing code ...
     def stop_measurement(self) -> None:
         if not self.app_state.device:
             return
@@ -194,23 +182,18 @@ class MeasurementStationController(StationControllerBase):
     def disconnect_now(self) -> None:
         asyncio.run(self._do_disconnect())
 
-    # ▼▼▼ 追加：対象セルの排他制御をハードウェアに送信するメソッド ▼▼▼
     def apply_exclusive_routing(self, target_cell: str) -> None:
         if not self.app_state.device:
             raise StateError("Device is not initialized")
-        # デバイス通信で画面がフリーズしないよう、別スレッドで安全に実行
         asyncio.run(asyncio.to_thread(self._apply_exclusive_routing_sync, target_cell))
 
-    # ▼▼▼ 追加：ガス名から対象のセル名を推測するロジック ▼▼▼
     def _infer_cell_for_gas(self, gas_name: str) -> str | None:
         upper_name = gas_name.upper().replace("-", " ")
         
-        # 1. 完全なセル名が含まれているか
         for cell_name in self.app_state.config.cells_and_electrodes.keys():
             if cell_name.upper() in upper_name:
                 return cell_name
                 
-        # 2. 末尾のアルファベット（A, Bなど）でマッチするか
         tokens = upper_name.split()
         suffix = None
         for token in reversed(tokens):
@@ -225,28 +208,23 @@ class MeasurementStationController(StationControllerBase):
                     return cell_name
                     
         return None
-    # ▲▲▲ 追加ここまで ▲▲▲
 
     def _apply_exclusive_routing_sync(self, target_cell: str) -> None:
         target_electrodes = self.app_state.config.cells_and_electrodes.get(target_cell, [])
         
-        # 1. 電極の排他処理
         for elec_name in self.app_state.elec_chk_vars.keys():
             is_target = (elec_name in target_electrodes)
             channel = self.app_state.config.pca_relay_map.get(elec_name)
             if channel is not None:
                 self.app_state.device.set_pca_relay(channel, 1 if is_target else 0)
                 
-        # 2. ガスの排他処理
         for gas_name in self.app_state.gas_chk_vars.keys():
-            # ▼▼▼ 変更：推測ロジックを使って対象ガスかどうか判定する ▼▼▼
             inferred_cell = self._infer_cell_for_gas(gas_name)
             
             if inferred_cell:
                 is_target = (inferred_cell == target_cell)
             else:
-                is_target = (gas_name == target_cell) # 推測できなければ完全一致でフォールバック
-            # ▲▲▲ 変更ここまで ▲▲▲
+                is_target = (gas_name == target_cell)
                 
             servo = self.app_state.config.pca_servo_map.get(gas_name)
             if servo:
@@ -254,40 +232,32 @@ class MeasurementStationController(StationControllerBase):
                 self.app_state.device.set_servo(servo["channel"], angle)
 
     def force_hardware_all_off(self) -> None:
-        """エマスト発動時などに呼び出し、全リレーとサーボを物理的にOFFにする"""
         if not self.app_state.device or not self.app_state.device.is_connected:
             return
-        
-        # 画面をフリーズさせないよう別スレッドで安全に実行
         asyncio.run(asyncio.to_thread(self._force_hardware_all_off_sync))
 
     def _force_hardware_all_off_sync(self) -> None:
         import time
         try:
-            # 1. 最優先：測定器の出力を止める（トリガーOFF）
             self.app_state.device.stop_measurement()
             if hasattr(self.app_state.device, "stop_di2"):
                 self.app_state.device.stop_di2()
             self._log("[E-STOP Sequence] 1. Measurement triggers stopped.")
             
-            # 測定器からの電流が完全に落ちるまで待機（サージ・アーク防止のため1秒待機）
             time.sleep(1.0)
             
-            # 2. 電流が落ちてから、電極リレーを少しずつ時間差でOFFにする
             self._log("[E-STOP Sequence] 2. Disconnecting electrodes...")
             for channel in self.app_state.config.pca_relay_map.values():
                 self.app_state.device.set_pca_relay(channel, 0)
-                time.sleep(0.1)  # リレー同時遮断によるノイズと負荷を分散
+                time.sleep(0.1) 
                 
             time.sleep(0.5)
             
-            # 3. ガスサーボをOFF角度にする
             self._log("[E-STOP Sequence] 3. Closing gas lines...")
             for servo in self.app_state.config.pca_servo_map.values():
                 self.app_state.device.set_servo(servo["channel"], servo["off_angle"])
-                time.sleep(0.1)  # サーボの同時駆動による電源電圧降下を防ぐ
+                time.sleep(0.1)
                 
-            # 4. 最後にArduino側の全体初期化を呼び、完全な安全状態を確定
             self._log("[E-STOP Sequence] 4. Finalizing device states (SYS,INIT)...")
             self.app_state.device.initialize_devices()
                 
